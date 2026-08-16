@@ -159,6 +159,16 @@ def test_deepseek_runtime_sdk_required_on_supported_platform(gateway):
         assert not rt.sdk_available
 
 
+def test_deepseek_runtime_declares_only_implemented_capabilities(gateway):
+    assert DeepSeekHarnessRuntime(gateway).capabilities().summary() == {
+        "native_resume": False,
+        "native_cancel": False,
+        "persistent_session_recovery": False,
+        "streaming": False,
+        "tool_bridge": False,
+    }
+
+
 async def test_deepseek_runtime_honest_when_unavailable(gateway):
     """不支持平台或 SDK 未装时，run() 必须如实 rejected，绝不伪装 completed。"""
     rt = DeepSeekHarnessRuntime(gateway)

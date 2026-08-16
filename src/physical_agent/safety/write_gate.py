@@ -56,9 +56,10 @@ class WriteGate:
         if not self.policy_engine.is_policy_loaded:
             return GateResult(False, "policy not loaded")
 
-        # 3. audit store 健康
-        if not self.audit.is_healthy:
-            return GateResult(False, "audit store not healthy")
+        # 3. PHYSICAL mode requires persistent, verified, signed audit with
+        # a runtime checkpoint policy; an in-memory audit is simulation-only.
+        if not self.audit.is_physical_ready:
+            return GateResult(False, "audit store not physically ready")
 
         # 4. adapter allowlist 已加载
         if not self.adapters.is_allowlist_loaded:

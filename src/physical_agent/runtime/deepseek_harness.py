@@ -155,12 +155,17 @@ class DeepSeekHarnessRuntime:
         return self._cordis
 
     def capabilities(self) -> RuntimeCapabilities:
+        """Return only capabilities exercised by the runtime implementation.
+
+        Host bookkeeping is not native cancellation or recovery, and the planned
+        M1A gateway bridge is not available in this M0 runtime.
+        """
         return RuntimeCapabilities(
-            native_resume=False,            # workaround：host transcript + 新 session
-            native_cancel=True,             # subprocess termination
+            native_resume=False,
+            native_cancel=False,
             persistent_session_recovery=False,
             streaming=False,
-            tool_bridge=True,               # capability.invoke → gateway（M1A）
+            tool_bridge=False,
         )
 
     # ---- 官方 SDK 实例化 ----
@@ -261,5 +266,6 @@ class DeepSeekHarnessRuntime:
         )
 
     async def cancel(self, session_id: str) -> None:
-        # cancellation 由 host 回收 SDK 子进程实现（context manager 退出即回收）
+        # This only drops host bookkeeping.  It cannot terminate a running
+        # Harness subprocess, so capabilities().native_cancel remains false.
         self._sessions.pop(session_id, None)

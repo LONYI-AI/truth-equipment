@@ -51,7 +51,6 @@ async def test_write_gate_requires_allowlist_loaded(gateway, adapters, monkeypat
     """adapter allowlist 未加载 → 写拒绝（安全栈不完整）。"""
     # 构造一个 allowlist 未加载的 registry
     from physical_agent.adapters.registry import AdapterRegistry
-    from physical_agent.audit.store import AuditStore
     from physical_agent.policy.approval import ApprovalEngine
     from physical_agent.safety.gateway import CapabilityGateway
 
@@ -60,7 +59,7 @@ async def test_write_gate_requires_allowlist_loaded(gateway, adapters, monkeypat
         registry=gateway.registry,
         adapters=empty,
         kill_switch=gateway.kill_switch,
-        audit=AuditStore(),
+        audit=gateway.audit,
         approval_engine=ApprovalEngine(),
     )
     req = CapabilityRequest(capability_id="home.climate.turn_off", correlation_id="fc6")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from physical_agent.adapters.base import ExecutionDomain
 from physical_agent.adapters.mock import MockAdapter, MockDevice
 from physical_agent.adapters.registry import AdapterRegistry
 from physical_agent.audit.store import AuditStore
@@ -86,7 +87,12 @@ def registry() -> CapabilityRegistry:
 
 @pytest.fixture
 def audit(tmp_path) -> AuditStore:
-    return AuditStore(path=tmp_path / "audit.jsonl", checkpoint_path=tmp_path / "audit.checkpoint")
+    return AuditStore(
+        path=tmp_path / "audit.jsonl",
+        signing_key=b"test-audit-signing-key",
+        checkpoint_path=tmp_path / "audit.checkpoint",
+        checkpoint_interval=1,
+    )
 
 
 @pytest.fixture
@@ -107,7 +113,7 @@ def mock_adapter(mock_device: MockDevice) -> MockAdapter:
 @pytest.fixture
 def adapters(mock_adapter: MockAdapter) -> AdapterRegistry:
     reg = AdapterRegistry()
-    reg.register("home", mock_adapter)
+    reg.register("home", mock_adapter, execution_domain=ExecutionDomain.BOTH)
     reg.mark_loaded()
     return reg
 

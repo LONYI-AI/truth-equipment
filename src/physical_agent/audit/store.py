@@ -27,6 +27,10 @@ class ChainIntegrityError(Exception):
     """哈希链断裂（检测到篡改）。"""
 
 
+class AuditQuarantinedError(RuntimeError):
+    """The audit store is unhealthy and must not accept further writes."""
+
+
 class AuditEvent:
     """一条审计事件。"""
 
@@ -66,19 +70,35 @@ class AuditStore:
         path: Path | None = None,
         signing_key: bytes | None = None,
         checkpoint_path: Path | None = None,
+        checkpoint_interval: int | None = None,
         auto_load: bool = True,
     ) -> None:
         self._path = path
         self._signing_key = signing_key
         self._checkpoint_path = checkpoint_path
+        self._checkpoint_interval = checkpoint_interval
+        self._events_since_checkpoint = 0
         self._events: list[AuditEvent] = []
         self._lock = threading.Lock()
         self._last_hash = GENESIS
         self._loaded = False
         self._healthy = True
-        if auto_load and path is not None and path.exists():
+        if checkpoint_interval is not None and checkpoint_interval < 1:
+            raise ValueError("checkpoint_interval must be positive when configured")
+        if auto_load and path is not None:
             try:
+                path.touch(exist_ok=True)
                 self.load_and_verify()
+                # A physical store starts with a signed, persistent genesis
+                # checkpoint.  This also makes the checkpoint policy runtime,
+                # rather than a test-only helper.
+                if (
+                    self._checkpoint_interval is not None
+                    and self._signing_key is not None
+                    and self._checkpoint_path is not None
+                    and not self._checkpoint_path.exists()
+                ):
+                    self.checkpoint(persist=True)
             except ChainIntegrityError:
                 # 损坏：标记 unhealthy（fail-closed），不崩溃启动
                 self._healthy = False
@@ -127,6 +147,8 @@ class AuditStore:
         with self._lock:
             self._events = events
             self._last_hash = prev
+            if self._checkpoint_interval is not None:
+                self._events_since_checkpoint = len(events) % self._checkpoint_interval
             self._loaded = True
             self._healthy = True
 
@@ -183,6 +205,7 @@ class AuditStore:
                 ev.hash = obj.get("hash", "")
                 expected = self._sha256(prev + ev.canonical())
                 if ev.hash != expected or ev.prev_hash != prev:
+                    self._healthy = False
                     raise ChainIntegrityError(f"chain broken at line {lineno}")
                 prev = ev.hash
 
@@ -194,16 +217,53 @@ class AuditStore:
     def loaded(self) -> bool:
         return self._loaded
 
+    @property
+    def is_persistent_configured(self) -> bool:
+        """Whether a persistent audit path, as required for PHYSICAL mode, exists in config."""
+        return self._path is not None
+
+    @property
+    def is_physical_ready(self) -> bool:
+        """Whether this store meets the non-negotiable PHYSICAL audit policy."""
+        return (
+            self._path is not None
+            and self._path.exists()
+            and self._loaded
+            and self._healthy
+            and self._checkpoint_path is not None
+            and self._checkpoint_path.exists()
+            and self._signing_key is not None
+            and self._checkpoint_interval is not None
+            and self._checkpoint_interval > 0
+        )
+
     # ---- append / checkpoint ----
 
     def append(self, event_type: str, correlation_id: str, data: dict[str, Any] | None = None) -> AuditEvent:
         event = AuditEvent(event_type, correlation_id, data)
         with self._lock:
+            if not self._healthy:
+                raise AuditQuarantinedError("audit store quarantined: integrity verification failed")
             event.prev_hash = self._last_hash
             event.hash = self._sha256(self._last_hash + event.canonical())
+            try:
+                self._flush(event)
+            except OSError as exc:
+                self._healthy = False
+                raise AuditQuarantinedError(f"audit store quarantined: persistence failed: {exc}") from exc
             self._last_hash = event.hash
             self._events.append(event)
-            self._flush(event)
+            if self._checkpoint_interval is not None:
+                self._events_since_checkpoint += 1
+                if self._events_since_checkpoint >= self._checkpoint_interval:
+                    try:
+                        self._checkpoint_unlocked(persist=True)
+                    except OSError as exc:
+                        self._healthy = False
+                        raise AuditQuarantinedError(
+                            f"audit store quarantined: checkpoint persistence failed: {exc}"
+                        ) from exc
+                    self._events_since_checkpoint = 0
         return event
 
     def _flush(self, event: AuditEvent) -> None:
@@ -215,7 +275,13 @@ class AuditStore:
     def checkpoint(self, persist: bool = True) -> str:
         """生成签名 checkpoint（HMAC）。无 signing_key 时返回链尾哈希。"""
         with self._lock:
-            digest = self._last_hash
+            if not self._healthy:
+                raise AuditQuarantinedError("audit store quarantined: integrity verification failed")
+            return self._checkpoint_unlocked(persist=persist)
+
+    def _checkpoint_unlocked(self, persist: bool) -> str:
+        """Create a checkpoint while ``self._lock`` is already held."""
+        digest = self._last_hash
         if self._signing_key is None:
             cp = digest
         else:
@@ -242,6 +308,7 @@ class AuditStore:
             for event in self._events:
                 expected = self._sha256(prev + event.canonical())
                 if event.hash != expected:
+                    self._healthy = False
                     raise ChainIntegrityError(
                         f"chain broken at {event.event_type}/{event.correlation_id}"
                     )

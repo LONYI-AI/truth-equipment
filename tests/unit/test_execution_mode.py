@@ -2,7 +2,35 @@
 
 from __future__ import annotations
 
+import pytest
+
+from physical_agent.adapters.base import Device, DeviceState, ExecutionDomain, ExecutionEvidence
+from physical_agent.adapters.registry import AdapterRegistry
+from physical_agent.audit.store import AuditStore
 from physical_agent.capability.request import CapabilityRequest
+from physical_agent.execution.state_machine import ExecutionMode
+from physical_agent.policy.approval import ApprovalEngine
+from physical_agent.safety.gateway import CapabilityGateway
+
+
+class _RealLikeAdapter:
+    """Adversarial physical-looking adapter: execution must never be reached in SIMULATION."""
+
+    def __init__(self) -> None:
+        self.execute_calls = 0
+
+    async def discover(self) -> list[Device]:
+        return []
+
+    async def observe(self, device_id: str) -> DeviceState:
+        return DeviceState(device_id=device_id)
+
+    async def execute(self, request: object) -> ExecutionEvidence:
+        self.execute_calls += 1
+        return ExecutionEvidence(correlation_id="should-not-run", dispatched=True)
+
+    async def verify(self, execution: ExecutionEvidence) -> ExecutionEvidence:
+        return execution
 
 
 async def test_simulation_mode_no_env_required(simulation_gateway, monkeypatch):
@@ -55,3 +83,51 @@ async def test_audit_records_execution_mode(simulation_gateway, audit):
     requested = [e for e in audit.events() if e.event_type == "capability_requested"]
     assert requested
     assert requested[0].data.get("execution_mode") == "simulation"
+
+
+async def test_simulation_rejects_physical_adapter_without_execute(registry, kill_switch, tmp_path):
+    """A real-like adapter registered in SIMULATION is fail-closed before execute()."""
+    real_like = _RealLikeAdapter()
+    adapters = AdapterRegistry()
+    adapters.register("home", real_like, execution_domain=ExecutionDomain.PHYSICAL_ONLY)
+    adapters.mark_loaded()
+    gw = CapabilityGateway(
+        registry,
+        adapters,
+        mode=ExecutionMode.SIMULATION,
+        kill_switch=kill_switch,
+        audit=AuditStore(),
+        approval_engine=ApprovalEngine(),
+    )
+    outcome = await gw.execute(CapabilityRequest(capability_id="home.climate.turn_off", correlation_id="adversary"))
+    assert outcome["status"] == "rejected"
+    assert "execution domain" in outcome["reason"]
+    assert real_like.execute_calls == 0
+
+
+async def test_physical_rejects_simulation_only_adapter(registry, kill_switch, audit):
+    adapters = AdapterRegistry()
+    adapters.register("home", _RealLikeAdapter(), execution_domain=ExecutionDomain.SIMULATION_ONLY)
+    adapters.mark_loaded()
+    gw = CapabilityGateway(
+        registry,
+        adapters,
+        kill_switch=kill_switch,
+        audit=audit,
+        approval_engine=ApprovalEngine(),
+    )
+    outcome = await gw.execute(CapabilityRequest(capability_id="home.climate.turn_off", correlation_id="sim-only"))
+    assert outcome["status"] == "rejected"
+    assert "execution domain" in outcome["reason"]
+
+
+def test_physical_mode_rejects_memory_only_audit(registry, kill_switch):
+    with pytest.raises(ValueError, match="PHYSICAL mode requires"):
+        CapabilityGateway(
+            registry,
+            AdapterRegistry(),
+            mode=ExecutionMode.PHYSICAL,
+            kill_switch=kill_switch,
+            audit=AuditStore(),
+            approval_engine=ApprovalEngine(),
+        )

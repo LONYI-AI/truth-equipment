@@ -14,12 +14,12 @@
 |---|---|---|---|---|
 | DeepSeek Harness | 0.1.0-rc.6（Developer Preview，2026-08-13 发布）| **pin commit SHA**（见 §0）| **Experimental prerelease** | 2026-08-16 |
 | deepseek-harness-sdk | 0.1.0rc6 | **==0.1.0rc6（exact）** | **Experimental prerelease** | 2026-08-16 |
-| LangGraph | 1.2.x（1.2.5 已证实；Owner 引 1.2.11，待 pin）| **1.x LTS，M0 定 patch** | Stable | 2026-08-16 |
+| LangGraph | **1.2.11** | **1.x LTS，M0 定 patch** | Stable | 2026-08-16 |
 | Home Assistant | 2026.8.2 | 2026.8.2 | Stable | 2026-08-16 |
-| ESPHome | 2026.8.0 generation | ≥2026.4.0，M0 定 patch | Stable | 2026-08-16 |
+| ESPHome | **stable 2026.7.4** / prerelease **2026.8.0b3** | ≥2026.4.0，M0 定 patch | Stable / prerelease | 2026-08-16 |
 | Ollama | 0.32.13 | 0.32.13 | Stable | 2026-08-16 |
 | Qwen model | qwen3.5/3.6 系 | qwen3:8b（候选，benchmark 决定）| 非架构不变量 | 2026-08-16 |
-| Qdrant | v1.18.1 | v1.18.1（M1 不启用）| Stable（planned）| 2026-08-16 |
+| Qdrant | **1.19.0** | v1.18.1（M1 不启用）| Stable（planned）| 2026-08-16 |
 | Docker Engine / Compose | 29.x / v5.1.1 | ≥25.0 / v2 插件 | Stable | 2026-08-16 |
 | Mosquitto | 2.0.x | 2.0.x（M1 禁用）| Stable | 2026-08-16 |
 
@@ -69,7 +69,8 @@
 | 字段 | 值 |
 |---|---|
 | Component | ESPHome |
-| Current upstream stable | 2026.7.x（patch 待定；已确认 2026.1.0、2026.4.0 存在）|
+| Current upstream stable | **2026.7.4** |
+| Current upstream prerelease | **2026.8.0b3** |
 | Selected production baseline | ≥2026.4.0（M0 定精确 patch）|
 | Selected version date | 2026-08（patch 待定）|
 | Reason for pin | 2026.1 起 ESP32-C3 **默认 ESP-IDF 框架**；需 pin 避免框架/组件 breaking change |
@@ -101,7 +102,7 @@
 | 字段 | 值 |
 |---|---|
 | Component | LangGraph (Python) |
-| Current upstream stable | **1.2.5**（2026-06-12）|
+| Current upstream stable | **1.2.11** |
 | Selected production baseline | 1.x（LTS；M0 定 patch）|
 | Selected version date | 2026-06 |
 | Reason for pin | LangGraph 1.0 为 LTS 风格；legacy 0.4 维护至 2026-12；选 1.x 长期稳定 |
@@ -131,7 +132,7 @@
 | 字段 | 值 |
 |---|---|
 | Component | Qdrant |
-| Current upstream stable | **v1.18.1**（2026-05-22；v1.18.0 TurboQuant）|
+| Current upstream stable | **v1.19.0** |
 | Selected production baseline | v1.18.1（**若 M1 启用**）|
 | Selected version date | 2026-05-22 |
 | Reason for pin | 带 API key 鉴权；**M1 默认不启用**（见 §4）|
@@ -267,8 +268,8 @@ class QdrantMemoryStore: ...  # planned adapter，未实现
 
 | 版本事实 | 置信度 | 说明 |
 |---|---|---|
-| HA 2026.8.2 / Ollama 0.32.13 / Qdrant 1.18.1 / LangGraph 1.2.5 | 高 | 官方 release 页面直接核实 |
-| ESPHome 2026.7.x 精确 patch | 中 | 版本线已确认，精确 patch 待 M0 拉取时定 |
+| HA 2026.8.2 / Ollama 0.32.13 / Qdrant 1.19.0 / LangGraph 1.2.11 | 高 | 官方 release 页面直接核实 |
+| ESPHome stable 2026.7.4 / prerelease 2026.8.0b3 | 高 | 官方 changelog/release 页面直接核实 |
 | Docker Compose CLI v5.1.1 | 中 | 社区教程引用，非官方 release 页直接核实 |
 
 > 所有"已核实"标注以 Evidence Matrix 的 primary source 为准；中等置信度项在 M0 落地时补齐。

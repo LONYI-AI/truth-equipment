@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -35,6 +36,14 @@ class ExecutionEvidence(BaseModel):
     physical_effect_verified: bool = False     # V4：物理效果
     physical_effect: str = "pending"
     detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionDomain(StrEnum):
+    """The only execution environments an adapter registration may permit."""
+
+    SIMULATION_ONLY = "simulation_only"
+    PHYSICAL_ONLY = "physical_only"
+    BOTH = "both"
 
 
 @runtime_checkable

@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from physical_agent.adapters.registry import AdapterRegistry
+from physical_agent.adapters.registry import AdapterRegistry, UnknownNamespaceError
 from physical_agent.audit.store import AuditStore
 from physical_agent.capability.registry import CapabilityRegistry, UnknownCapabilityError
 from physical_agent.capability.request import CapabilityRequest
@@ -51,6 +51,8 @@ class CapabilityGateway:
         self.kill_switch = kill_switch or KillSwitch()
         self.policy = policy_engine or PolicyEngine(registry, self.kill_switch)
         self.audit = audit or AuditStore()
+        if self.mode == ExecutionMode.PHYSICAL and not self.audit.is_persistent_configured:
+            raise ValueError("PHYSICAL mode requires AuditStore(path=...); memory audit is simulation-only")
         self.verifier = verifier or VerificationEngine()
         self.coordinator = coordinator or ExecutionCoordinator(mode=mode)
         self.approval = approval_engine or ApprovalEngine()
@@ -73,6 +75,11 @@ class CapabilityGateway:
         # 幂等/重放防护（P0-8）
         if self.coordinator.has(request.correlation_id):
             return {"status": "rejected", "reason": f"duplicate correlation_id {request.correlation_id!r}"}
+
+        # Do not attempt an audit append that an unhealthy store must reject.
+        # PHYSICAL operation has no safe degraded/auditless mode.
+        if self.mode == ExecutionMode.PHYSICAL and not self.audit.is_physical_ready:
+            return {"status": "rejected", "reason": "audit store not physically ready"}
 
         self.audit.append(
             "capability_requested", request.correlation_id,
@@ -160,6 +167,18 @@ class CapabilityGateway:
     # ---- 派发执行 ----
 
     async def _dispatch(self, request: CapabilityRequest, definition: Any, decision: Any) -> dict[str, Any]:
+        # Adapter execution domains are an independent boundary from policy and
+        # write-gate readiness. A mismatch fails closed before observe/execute.
+        try:
+            domain_allows_mode = self.adapters.allows(request.capability_id, self.mode)
+        except UnknownNamespaceError as exc:
+            self.audit.append("adapter_rejected", request.correlation_id, {"reason": str(exc)})
+            return {"status": "rejected", "reason": str(exc)}
+        if not domain_allows_mode:
+            reason = f"adapter execution domain forbids {self.mode.value} mode"
+            self.audit.append("adapter_rejected", request.correlation_id, {"reason": reason})
+            return {"status": "rejected", "reason": reason}
+
         # 只读（P0-9 side_effect none）→ observe
         if definition.is_read_only:
             adapter = self.adapters.route(request.capability_id)

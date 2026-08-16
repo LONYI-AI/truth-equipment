@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from physical_agent.adapters.base import ExecutionDomain
 from physical_agent.adapters.mock import MockAdapter
 from physical_agent.adapters.registry import AdapterRegistry, UnknownNamespaceError
 from physical_agent.capability.schema import CapabilityDefinition, Operation, SideEffect
@@ -12,7 +13,7 @@ from physical_agent.capability.schema import CapabilityDefinition, Operation, Si
 def test_route_by_namespace():
     reg = AdapterRegistry()
     ha = MockAdapter()
-    reg.register("home", ha)
+    reg.register("home", ha, execution_domain=ExecutionDomain.BOTH)
     assert reg.route("home.climate.turn_on") is ha
 
 
@@ -25,7 +26,7 @@ def test_unknown_namespace_raises():
 def test_allowlist_loaded_flag():
     reg = AdapterRegistry()
     assert not reg.is_allowlist_loaded
-    reg.register("home", MockAdapter())
+    reg.register("home", MockAdapter(), execution_domain=ExecutionDomain.SIMULATION_ONLY)
     assert not reg.is_allowlist_loaded  # 未 mark_loaded
     reg.mark_loaded()
     assert reg.is_allowlist_loaded

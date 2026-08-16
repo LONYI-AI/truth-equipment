@@ -108,9 +108,10 @@ async def test_adapter_cannot_be_reached_directly_by_llm(registry, mock_adapter,
 
     这里验证 gateway 是唯一执行入口（adapter 不暴露给 runtime）。
     """
+    from physical_agent.adapters.base import ExecutionDomain
     from physical_agent.adapters.registry import AdapterRegistry
     adapters = AdapterRegistry()
-    adapters.register("home", mock_adapter)
+    adapters.register("home", mock_adapter, execution_domain=ExecutionDomain.BOTH)
     adapters.mark_loaded()
     gw = CapabilityGateway(
         registry=registry,

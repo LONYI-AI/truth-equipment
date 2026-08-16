@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from physical_agent.audit.store import AuditStore, ChainIntegrityError
+from physical_agent.audit.store import AuditQuarantinedError, AuditStore, ChainIntegrityError
 
 
 def _append_n(store: AuditStore, n: int) -> None:
@@ -53,6 +53,9 @@ def test_modify_historical_event_detected(tmp_path):
     store2 = AuditStore(path=path)
     with pytest.raises(ChainIntegrityError):
         store2.load_and_verify()
+    assert not store2.is_healthy
+    with pytest.raises(AuditQuarantinedError):
+        store2.append("after_tamper", "blocked")
 
 
 def test_truncate_without_checkpoint_undetectable(tmp_path):
@@ -83,6 +86,25 @@ def test_tail_truncation_detected_with_checkpoint(tmp_path):
     store2 = AuditStore(path=path, signing_key=b"key", checkpoint_path=cp_path)
     with pytest.raises(ChainIntegrityError):
         store2.load_and_verify()
+    assert not store2.is_healthy
+    with pytest.raises(AuditQuarantinedError):
+        store2.append("after_truncate", "blocked")
+
+
+def test_runtime_checkpoint_policy_persists_without_manual_checkpoint(tmp_path):
+    """Configured checkpointing runs during append, rather than only in tests."""
+    path = tmp_path / "audit.jsonl"
+    cp_path = tmp_path / "audit.checkpoint"
+    store = AuditStore(
+        path=path,
+        signing_key=b"key",
+        checkpoint_path=cp_path,
+        checkpoint_interval=1,
+    )
+    store.append("event", "c1")
+    saved = json.loads(cp_path.read_text(encoding="utf-8"))
+    assert saved["last_hash"] == store.last_hash
+    assert store.is_physical_ready
 
 
 def test_checkpoint_tamper_detected(tmp_path):
@@ -155,7 +177,8 @@ async def test_writes_fail_closed_on_corrupt(tmp_path, registry, mock_adapter, k
         audit.load_and_verify()
 
     adapters = AdapterRegistry()
-    adapters.register("home", mock_adapter)
+    from physical_agent.adapters.base import ExecutionDomain
+    adapters.register("home", mock_adapter, execution_domain=ExecutionDomain.BOTH)
     adapters.mark_loaded()
 
     gw = CapabilityGateway(
