@@ -1,0 +1,133 @@
+# ============================================================
+# compose.yaml — Physical AI Agent Platform（生产默认栈）
+# ============================================================
+# 版本：v0.2 (2026-08-16, Architecture Audit v0.2)
+# 状态：Proposed / Pending Owner Approval
+#
+# 用法（从 repo root 执行）：
+#   cp .env.example .env   # 填写真实值；.env 永不提交
+#   docker compose config   # 校验（fail-closed：密钥缺失即报错）
+#   docker compose up -d
+#
+# 网络拓扑：
+#   - homeassistant: network_mode: host（mDNS/SSDP 设备发现必需，仅 Linux）
+#   - ollama: bridge（默认网络 agent-platform-internal），端口 127.0.0.1 绑定
+#
+# Host vs Container 访问 URL 区分：
+#   - Host 上的 Agent Runtime 访问 HA： http://localhost:8123
+#   - Host 上的 Agent Runtime 访问 Ollama： http://127.0.0.1:11434
+#   - Container 内服务访问 Ollama： http://ollama:11434（service DNS）
+#   - Container 内无法用 service DNS 访问 HA（HA 在 host 网络），需用宿主机 IP
+# ============================================================
+
+services:
+
+  # ----- Home Assistant（primary smart-home/IoT adapter）-----
+  # ADR-0001 / ADR-0002：经 HomeAssistantAdapter 接入
+  # network_mode: host 是 HA 官方推荐的 mDNS 发现方式；仅 Linux 支持
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:2026.8.2
+    container_name: homeassistant
+    restart: unless-stopped
+    # 不使用 privileged: true（本项目无 USB/Zigbee dongle 直通需求）
+    # 若未来需 USB 设备，改用显式 device mapping：
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    cap_drop: [ALL]
+    cap_add: [NET_RAW, SYS_TIME]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - ./docker/volumes/ha_config:/config
+      - /etc/localtime:/etc/localtime:ro
+      # /run/dbus 仅蓝牙发现需要；无蓝牙可注释
+      # - /run/dbus:/run/dbus:ro
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8123/\", timeout=3)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+  # ----- Ollama（本地 LLM 推理）-----
+  # ADR-0003：ModelProvider 抽象；候选模型 qwen3:8b（benchmark 决定）
+  # 版本 v0.32.13 已核实（2026-08-14）；0.32.x 线
+  ollama:
+    image: ollama/ollama:0.32.13
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ./docker/volumes/ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1   # 模型常驻内存，避免冷启动延迟
+    # GPU（可选，NVIDIA）：
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           capabilities: [gpu]
+    ports:
+      - "127.0.0.1:11434:11434"   # 仅本机；容器间走 bridge service DNS
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ----- Qdrant（向量数据库，planned adapter，M1 不启用）-----
+  # ADR-0004：仅在出现明确 semantic retrieval 需求时启用。
+  # 启用时：取消注释 + 在 .env 提供 QDRANT_API_KEY（fail-closed）。
+  #
+  # qdrant:
+  #   image: qdrant/qdrant:v1.18.1
+  #   container_name: qdrant
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./docker/volumes/qdrant_storage:/qdrant/storage
+  #     - ./docker/volumes/qdrant_snapshots:/qdrant/snapshots
+  #   environment:
+  #     # fail-closed：缺失即拒绝启动（禁止 :-changeme）
+  #     - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
+  #     - QDRANT__LOG_LEVEL=info
+  #   ports:
+  #     - "127.0.0.1:6333:6333"   # REST（仅本机）
+  #     # - "127.0.0.1:6334:6334"  # gRPC（按需）
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -f http://localhost:6333/health || exit 1"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+  #     start_period: 20s
+
+  # ----- Mosquitto（MQTT Broker，M1 禁用）-----
+  # ADR-0009：推迟到首个需要 MQTT 的设备接入时启用，启用即鉴权 + ACL。
+  #
+  # mosquitto:
+  #   image: eclipse-mosquitto:2.0.20
+  #   container_name: mosquitto
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:1883:1883"
+  #   volumes:
+  #     - ./docker/mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+  #     - ./docker/mosquitto/config/password_file:/mosquitto/config/password_file:ro
+  #     - ./docker/mosquitto/config/acl.file:/mosquitto/config/acl.file:ro
+  #     - ./docker/volumes/mosquitto_data:/mosquitto/data
+  #     - ./docker/volumes/mosquitto_log:/mosquitto/log
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "mosquitto_sub -t '$SYS/#' -C 1 -W 3 || exit 1"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+
+# ============================================================
+# 网络
+# ============================================================
+networks:
+  default:
+    name: agent-platform-internal

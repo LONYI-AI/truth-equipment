@@ -1,0 +1,32 @@
+# ============================================================
+# Mosquitto ACL 示例（Access Control List）
+# ============================================================
+# 使用方法：
+#   1. 复制为 acl.file（去掉 .example 后缀）
+#   2. 根据实际用户名修改
+#   3. 权限原则：最小权限，仅允许必要的 topic
+# ============================================================
+
+# Agent 运行时可读写空调控制 topic
+user agent_service
+topic write ac/control
+topic read ac/status
+topic read sensor/#
+
+# 只读监控用户（Grafana/Prometheus 等）
+user monitor
+topic read #
+
+# ESPHome 设备（通过 bridge 连接）
+user esphome_bedroom_ac
+topic write sensor/bedroom/#
+topic write climate/bedroom/#
+topic read command/bedroom/#
+
+# 禁止匿名用户（allow_anonymous false 已在 mosquitto.conf 设置）
+# 此处无需 anonymous 用户块
+
+# ===== 未来扩展示例 =====
+# user zigbee2mqtt
+# topic write zigbee2mqtt/#
+# topic read zigbee2mqtt/#

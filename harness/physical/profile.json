@@ -1,0 +1,39 @@
+{
+  "name": "dsh-physical",
+  "description": "Physical Agent OS — Physical Runtime Profile (M0.1 P0-1). Agent, NOT root shell.",
+  "version": "0.1.0",
+  "bundles": [
+    "@deepseek-ai/dsh-base",
+    "@deepseek-ai/dsh-headless"
+  ],
+  "tools": {
+    "allow": [
+      "capability.list",
+      "capability.describe",
+      "capability.observe",
+      "capability.invoke",
+      "verification.status",
+      "task.status",
+      "memory.query"
+    ],
+    "deny": [
+      "bash",
+      "shell",
+      "filesystem",
+      "editor",
+      "http",
+      "ssh",
+      "adb",
+      "mqtt",
+      "plugin.install",
+      "code.execute"
+    ]
+  },
+  "credentials": {
+    "home_assistant": false,
+    "mqtt": false,
+    "ssh": false,
+    "adb": false
+  },
+  "note": "本 profile 仅允许 capability.* 等受控工具，禁止 bash/shell/filesystem/HTTP/SSH/ADB/任意代码执行。所有 capability.invoke 必须桥接 Physical Safety Kernel，而非直连设备。"
+}

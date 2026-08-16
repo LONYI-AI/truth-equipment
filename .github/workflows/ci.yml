@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Typecheck (mypy)
+        run: mypy src
+
+      - name: Test (pytest)
+        run: pytest -q
+
+      - name: Coverage
+        run: pytest --cov=physical_agent --cov-report=term-missing -q
+
+      - name: Runtime conformance
+        run: pytest tests/runtime-conformance/ -q
+
+      - name: Policy bypass tests
+        run: pytest tests/security/ -q
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Repository consistency
+        run: python scripts/check_repo_consistency.py
+
+      - name: Docker compose config
+        run: docker compose config

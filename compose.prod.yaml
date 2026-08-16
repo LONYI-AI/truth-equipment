@@ -1,0 +1,27 @@
+# ============================================================
+# compose.prod.yaml — Production hardening overlay
+# ============================================================
+# 用法： docker compose -f compose.yaml -f compose.prod.yaml config
+#
+# 生产加固（v3.0 §40）：
+#   - resource limits（防止资源耗尽）
+#   - 只读根文件系统（适用时）
+#   - 明确的 restart policy（已在 base）
+# ============================================================
+
+services:
+  homeassistant:
+    read_only: false  # HA 需要写 /config，但卷已挂载
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  ollama:
+    read_only: false  # 模型写入 /root/.ollama 卷
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+
+  # 注：qdrant / mosquitto 在 M1 阶段不启用（见 compose.yaml 注释）

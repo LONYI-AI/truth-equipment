@@ -1,0 +1,55 @@
+# ===== Secrets（绝对禁止提交）=====
+.env
+.env.*
+!.env.example
+**/secrets.yaml
+!**/secrets.example.yaml
+*.pem
+*.key
+*.crt
+!*.example.crt
+**/password_file
+**/passwd
+
+# ===== 运行时数据 =====
+**/docker/volumes/
+**/ha_config/
+**/mosquitto/data/
+**/mosquitto/log/
+**/ollama_data/
+**/qdrant_data/
+**/qdrant_storage/
+**/qdrant_snapshots/
+**/chroma_data/
+**/frigate_data/
+backups/
+*.sqlite
+*.sqlite3
+*.db
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+build/
+dist/
+
+# ===== Node =====
+node_modules/
+
+# ===== OS / IDE =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ===== WorkBuddy 内部（不进 Git，不交付）=====
+.workbuddy/

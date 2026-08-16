@@ -1,0 +1,34 @@
+{
+  "name": "dsh-development",
+  "description": "Physical Agent OS — Development/Evolution Profile (M0.1 P0-1). No production device credentials.",
+  "version": "0.1.0",
+  "bundles": [
+    "@deepseek-ai/dsh-base",
+    "@deepseek-ai/dsh-headless"
+  ],
+  "tools": {
+    "allow": [
+      "bash",
+      "editor",
+      "git",
+      "filesystem",
+      "package",
+      "docs",
+      "test",
+      "compile"
+    ],
+    "deny": [
+      "home_assistant",
+      "mqtt",
+      "ssh",
+      "adb"
+    ]
+  },
+  "credentials": {
+    "home_assistant": false,
+    "mqtt": false,
+    "ssh": false,
+    "adb": false
+  },
+  "note": "本 profile 用于编写 Adapter/测试/文档/Code Review（Evolution Plane）。可写代码/编译/测试/联网查文档，但永远不拥有生产设备凭据。"
+}

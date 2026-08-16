@@ -1,0 +1,20 @@
+# ============================================================
+# compose.dev.yaml — Development override
+# ============================================================
+# 用法： docker compose -f compose.yaml -f compose.dev.yaml config
+#        docker compose -f compose.yaml -f compose.dev.yaml up -d
+#
+# dev 差异：
+#   - Windows/macOS 开发机上，HA 无法用 host network（Docker Desktop 限制）
+#     → dev 覆盖为端口映射（会失去 mDNS 自动发现，仅用于代码开发，非生产）
+#   - 生产（Linux 服务器）请只用 compose.yaml
+# ============================================================
+
+services:
+  homeassistant:
+    # dev 覆盖：去掉 host network，改用端口映射（Docker Desktop 兼容）
+    network_mode: ""
+    ports:
+      - "8123:8123"
+    # 注：端口映射模式下，HA 无法做 mDNS/SSDP 设备自动发现。
+    # ESPHome 设备需手动指定 HA 地址。仅用于开发调试，不用于生产。
