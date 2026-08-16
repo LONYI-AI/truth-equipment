@@ -118,6 +118,28 @@ class PolicyGate:
 - ⚠️ 上下文规则需维护（规则集随设备/场景增长）
   - 缓解：规则表数据驱动，M1 只实现 AC 域的最小规则集
 
+## M1A-W3 实现（Policy Gate 集成）
+
+W3 将本 ADR 的 Policy Gate 落为真实 graph 节点，明确以下契约：
+
+1. **typed contract**：graph 路由信号用 `PolicyRoute`（`APPROVED` / `REJECTED` /
+   `NEEDS_APPROVAL`），**由本轮真实 M0 `PolicyDecision` 确定性派生**
+   （`derive_policy_route`），不再使用字符串 `policy_verdict`、不依赖 LLM。
+2. **canonical request**：Policy Gate 只处理**一个明确的本轮 `CapabilityRequest`**。
+   - PLAN 路径：`current_plan.steps` 必须恰有 1 个 step，correlation_id 与本轮一致。
+   - DIRECT 路径：由本轮 `ReasoningDecision` 确定性转换为 M0 `CapabilityRequest`，
+     参数**原样透传**（例如 `temperature=100` 以 `100` 到达 PolicyEngine 再被拒绝，
+     禁止 Policy 前 clamp）。
+   - 任何缺失 / 矛盾 / 未知 capability / 异常 → fail-closed（REJECTED），绝不 execute。
+3. **stale-policy invariant（REV2）**：每次 policy_gate 调用**无条件 invalidate** 上一轮
+   policy/approval 授权状态的**全部五个字段**：`policy_decision`、`current_request`、
+   `approval_id`、`canonical_request_hash`、`needs_human_review`，再由本轮结果重新建立。
+   旧 `approved` 不得被本轮复用。**canonical extraction failure 与 `PolicyEngine.evaluate`
+   exception 均必须 fail-closed 且显式清空上述五字段**——否则上一轮 approved decision /
+   旧 canonical request 会经 partial state merge 残留，被误当成本轮授权（REV2 修复点）。
+4. **复用 M0**：直接复用 `PolicyEngine`（kill switch / registry allowlist / schema /
+   rate limit / risk classify）、`KillSwitch`、`RateLimiter`，不重建第二套。
+
 ## Related ADRs
 - ADR-0001: Capability Gateway（Policy 在此层执行）
 - ADR-0006: 物理验证（验证结果反馈给 Policy 决定重试/升级）

@@ -11,9 +11,10 @@ W2 REV2 整改（P0）：Reason → Graph 边界改用 typed contract `Reasoning
 （PLAN / DIRECT / NOOP 三态），non-actionable（NOOP）安全终态直达 END，
 绝不进入 policy_gate / execute / verify。
 
-审批挂起/恢复：W1 只定义 `human_review` 边界节点 + 状态契约（session_id /
-correlation_id / approval_id / canonical_request_hash），不实现 checkpoint/resume
-机制（该机制属 W3，届时依官方文档选定）。
+W3 整改：Policy → Graph 边界改用 typed contract `PolicyRoute`
+（APPROVED / REJECTED / NEEDS_APPROVAL，由本轮真实 PolicyDecision 确定性派生）；
+`human_review` 节点支持 LangGraph interrupt/resume 审批挂起/恢复（需调用方
+经 `build_graph(handlers, checkpointer=...)` 传入 checkpointer）。
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from physical_agent.runtime.planning import ReasoningRoute
+from physical_agent.runtime.planning import PolicyRoute, ReasoningRoute
 from physical_agent.runtime.state import AgentState
 
 # 节点 handler 契约：同步或异步皆可（官方 LangGraph 支持 sync/async 节点）。
@@ -87,15 +88,33 @@ def route_after_reason(state: AgentState) -> str:
 
 
 def route_after_policy(state: AgentState) -> str:
-    """policy 路由：approved → execute；needs_approval → human_review；否则 → escalate。
+    """policy 路由（typed contract `PolicyRoute`，非字符串 verdict）。
 
-    默认 fail-closed：未知/缺失判定一律走 escalate 终端，不执行。
+    - APPROVED       → execute
+    - NEEDS_APPROVAL → human_review（挂起边界）
+    - REJECTED/缺失  → escalate（fail-closed，绝不执行）
+
+    默认 fail-closed：未知/缺失一律走 escalate 终端，不执行。
     """
-    verdict = state.get("policy_verdict", "rejected")
-    if verdict == "approved":
+    route = state.get("policy_route")
+    if route == PolicyRoute.APPROVED:
         return "execute"
-    if verdict == "needs_approval":
+    if route == PolicyRoute.NEEDS_APPROVAL:
         return "human_review"
+    return "escalate"
+
+
+def route_after_human_review(state: AgentState) -> str:
+    """审批 resume 后的路由（W3）。
+
+    - APPROVED（re-policy 通过 + approval 单次消费成功）→ execute boundary
+    - 其余（拒绝 / 重放 / 过期 / 篡改 / re-policy 拒绝 / 消费失败）→ escalate（安全终止）
+
+    默认 fail-closed：缺失/未知一律 escalate，绝不执行。
+    """
+    route = state.get("policy_route")
+    if route == PolicyRoute.APPROVED:
+        return "execute"
     return "escalate"
 
 
@@ -116,17 +135,22 @@ def route_after_verify(state: AgentState) -> str:
     return "compensate"
 
 
-def build_graph(handlers: NodeHandlers) -> Any:
+def build_graph(handlers: NodeHandlers, checkpointer: Any = None) -> Any:
     """用真实 langgraph StateGraph 构建 M1A 拓扑，返回编译后的图。
 
-    拓扑（对齐 ARCHITECTURE.md §2.1 控制流，含 W2 REV2 三态路由）：
+    `checkpointer`：W3 审批挂起/恢复所需的 LangGraph checkpointer（如
+    `InMemorySaver`）。缺省 None 时不可中断（用于无审批路径）；需要
+    interrupt/resume 时调用方必须显式传入。
+
+    拓扑（对齐 ARCHITECTURE.md §2.1 控制流，含 W2 三态 + W3 policy/审批路由）：
         START → perceive → recall → reason
           reason ─(route)─┬→ plan ─→ policy_gate          (PLAN)
                           ├→ policy_gate                    (DIRECT)
                           └→ END                             (NOOP，安全终态)
-          policy_gate ─┬→ approved  → execute → verify
-                       ├→ rejected  → escalate → END
-                       └→ needs_approval → human_review → END（挂起边界）
+          policy_gate ─┬→ APPROVED        → execute → verify
+                       ├→ REJECTED        → escalate → END
+                       └→ NEEDS_APPROVAL  → human_review ─(resume)─┬→ execute
+                                                                    └→ escalate → END
           verify ─┬→ confirmed → memory_update → END
                   ├→ retry<2 → execute
                   └→ retry>=2 → compensate → END
@@ -152,11 +176,18 @@ def build_graph(handlers: NodeHandlers) -> Any:
     )
     builder.add_edge("plan", "policy_gate")
 
-    # policy 路由
+    # policy 路由（typed contract PolicyRoute）
     builder.add_conditional_edges(
         "policy_gate",
         route_after_policy,
         {"execute": "execute", "escalate": "escalate", "human_review": "human_review"},
+    )
+
+    # 审批挂起/恢复：human_review 中断（interrupt），resume 后按审批结果路由
+    builder.add_conditional_edges(
+        "human_review",
+        route_after_human_review,
+        {"execute": "execute", "escalate": "escalate"},
     )
 
     # 执行 → 验证
@@ -173,6 +204,7 @@ def build_graph(handlers: NodeHandlers) -> Any:
     builder.add_edge("memory_update", END)
     builder.add_edge("compensate", END)
     builder.add_edge("escalate", END)
-    builder.add_edge("human_review", END)
 
+    if checkpointer is not None:
+        return builder.compile(checkpointer=checkpointer)
     return builder.compile()

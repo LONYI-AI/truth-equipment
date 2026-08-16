@@ -27,7 +27,7 @@ from physical_agent.runtime.nodes import (
     make_recall_handler,
 )
 from physical_agent.runtime.nodes.perceive import PerceptionSnapshot, WorldStateSource
-from physical_agent.runtime.planning import Plan, ReasoningDecision, ReasoningRoute
+from physical_agent.runtime.planning import Plan, PolicyRoute, ReasoningDecision, ReasoningRoute
 
 
 class _InlineSource(WorldStateSource):
@@ -169,7 +169,7 @@ def test_graph_invoke_actionable_planned_path():
         assert plan.session_id == "s1"
         assert plan.correlation_id == "req-1"
         # test-only reject → escalate → END，绝不执行 adapter
-        return {"policy_verdict": "rejected"}
+        return {"policy_route": PolicyRoute.REJECTED}
 
     handlers = _base_handlers(
         store,
@@ -183,7 +183,7 @@ def test_graph_invoke_actionable_planned_path():
     assert len(policy_calls) == 1  # 计划确实到达 policy 边界
     assert escalated == ["escalate"]  # reject 走 escalate 终态
     assert result["current_plan"] is not None  # 计划在 policy 边界存活
-    assert result["policy_verdict"] == "rejected"
+    assert result["policy_route"] is PolicyRoute.REJECTED
 
 
 # ---- B. non-actionable path（真实 graph.invoke）----
@@ -245,7 +245,7 @@ def test_graph_invoke_stale_plan_direct_path_cleared():
         # reasoning 是本轮 DIRECT decision（canonical current-action 来源）
         assert state["reasoning"].route is ReasoningRoute.DIRECT
         assert state["reasoning"].capability_id == "home.climate.set_temperature"
-        return {"policy_verdict": "rejected"}
+        return {"policy_route": PolicyRoute.REJECTED}
 
     handlers = _base_handlers(
         store,
@@ -299,7 +299,7 @@ def test_graph_invoke_stale_plan_replaced_by_new_plan():
         assert step.parameters == {"temperature": 24}
         # 不得复用旧 step（旧 capability 必须消失）
         assert step.capability_id != "home.climate.turn_on"
-        return {"policy_verdict": "rejected"}
+        return {"policy_route": PolicyRoute.REJECTED}
 
     handlers = _base_handlers(
         store,
@@ -331,7 +331,7 @@ def test_graph_invoke_direct_path_preserved():
         policy_calls.append(state)
         # DIRECT 不经过 plan：policy 收到的 current_plan 应为 None
         assert state.get("current_plan") is None
-        return {"policy_verdict": "rejected"}
+        return {"policy_route": PolicyRoute.REJECTED}
 
     handlers = _base_handlers(
         store,
@@ -345,7 +345,7 @@ def test_graph_invoke_direct_path_preserved():
 
     assert len(policy_calls) == 1  # DIRECT → policy_gate
     assert escalated == ["escalate"]
-    assert result["policy_verdict"] == "rejected"
+    assert result["policy_route"] is PolicyRoute.REJECTED
 
 
 # ---- async（真实 graph.ainvoke）----
@@ -380,7 +380,7 @@ async def test_graph_ainvoke_actionable_planned_path():
         policy_calls.append(state)
         assert isinstance(state.get("current_plan"), Plan)
         assert state["current_plan"].steps[0].parameters == {"temperature": 100}
-        return {"policy_verdict": "rejected"}
+        return {"policy_route": PolicyRoute.REJECTED}
 
     handlers = _base_handlers(
         store,

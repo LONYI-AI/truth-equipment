@@ -35,6 +35,22 @@ class ReasoningRoute(StrEnum):
     NOOP = "noop"
 
 
+class PolicyRoute(StrEnum):
+    """Policy → Graph 的路由状态（typed contract，派生自 M0 `PolicyDecision`）。
+
+    - ``APPROVED``：allowed=True 且 requires_approval=False → execute boundary。
+    - ``REJECTED``：allowed=False（或任何 fail-closed 判定）→ escalate / 安全终止。
+    - ``NEEDS_APPROVAL``：allowed=True 且 requires_approval=True → human_review（挂起）。
+
+    路由只依据本枚举，且**必须由本轮真实 `PolicyDecision` 确定性派生**：
+    不得 LLM 决定、不得字符串猜测、不得缺失时默认 approved、不得异常时沿用旧 verdict。
+    """
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    NEEDS_APPROVAL = "needs_approval"
+
+
 class MemoryContext(BaseModel):
     """Recall 节点的检索结果（只读，session-scoped，bounded）。
 

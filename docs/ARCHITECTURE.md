@@ -126,7 +126,8 @@ class AgentState(TypedDict):
 | `recall` | 从 Memory 检索相关历史和偏好 | world_state + intent | 上下文增强的 messages |
 | `reason` | LLM 推理：理解意图、生成计划 | messages | `ReasoningRoute`：`plan` / `direct` / `noop` |
 | `plan` | 将 LLM 输出结构化为可执行计划 | reason 输出 | 结构化 Plan |
-| `policy_gate` | 风险分级、参数校验、权限检查 | plan + tool_calls | approved/rejected/escalate |
+| `policy_gate` | 风险分级、参数校验、权限检查（复用 M0 PolicyEngine）| canonical CapabilityRequest | `PolicyRoute`：APPROVED / REJECTED / NEEDS_APPROVAL |
+| `human_review` | 审批挂起（interrupt）/ 恢复（resume）+ 重新校验 + 单次消费 | policy_decision + canonical request | `PolicyRoute`：APPROVED / REJECTED |
 | `execute` | 经 Tool Gateway 执行工具调用 | approved tools | execution_result |
 | `verify` | 物理验证：多信号确认执行结果 | execution_result | verification_result |
 | `compensate` | 失败处理：重试/回滚/升级 | failed verification | recovery_action |
@@ -140,18 +141,19 @@ START → perceive → recall → reason → {route: ReasoningRoute}
                                   ├─ DIRECT → policy_gate (direct，保留 W1 direct path)
                                   └─ NOOP   → END（non-actionable 安全终态）
                                         │
-                                        ├─ approved → execute → verify
-                                        │                             │
-                                        │                     {verification_passed?}
-                                        │                       ├─ yes → memory_update → END
-                                        │                       └─ no → {retry_count < 2?}
-                                        │                              ├─ yes → execute (retry)
-                                        │                              └─ no → compensate → END
+                          policy_gate → {policy_route: PolicyRoute}
+                                  ├─ APPROVED       → execute → verify
+                                  ├─ REJECTED       → escalate → END
+                                  └─ NEEDS_APPROVAL → human_review（interrupt 挂起）
+                                                        │  resume → re-policy + consume once
+                                                        ├─ APPROVED  → execute → verify
+                                                        └─ REJECTED  → escalate → END
                                         │
-                                        ├─ rejected → escalate → END
-                                        └─ escalate → human_review → {approved?}
-                                                            ├─ yes → execute
-                                                            └─ no → END
+                                        │   verify → {verification_passed?}
+                                        │              ├─ yes → memory_update → END
+                                        │              └─ no → {retry_count < 2?}
+                                        │                     ├─ yes → execute (retry)
+                                        │                     └─ no → compensate → END
 ```
 
 > **Reason → Graph 边界契约（M1A-W2 REV3）**：路由用 typed contract
@@ -163,6 +165,20 @@ START → perceive → recall → reason → {route: ReasoningRoute}
 > 节点是 `current-plan` 的唯一生产者。DIRECT 到 policy boundary 的 canonical
 > current-action 来源是 `reasoning`（本轮 `ReasoningDecision`），policy 不得把遗留
 > `current_plan` 当成 DIRECT 本轮请求。详见 ADR-0010。
+>
+> **Policy → Graph 边界契约（M1A-W3）**：路由用 typed contract `PolicyRoute`
+> （`APPROVED` / `REJECTED` / `NEEDS_APPROVAL`），由本轮真实 M0 `PolicyDecision`
+> 确定性派生（非字符串 `policy_verdict`、非 LLM）。Policy Gate 只处理**一个明确的本轮
+> canonical CapabilityRequest**：PLAN 路径 = `current_plan.steps[0]`；DIRECT 路径 =
+> 本轮 `ReasoningDecision` 转 M0 `CapabilityRequest`（参数原样透传，不 clamp）。
+> **stale-policy invariant（REV2）**：每次 policy_gate 无条件 invalidate 上一轮 policy/approval
+> 授权状态的**全部五个字段**（`policy_decision` / `current_request` / `approval_id` /
+> `canonical_request_hash` / `needs_human_review`）；canonical extraction failure 与
+> `PolicyEngine.evaluate` exception 均 fail-closed 并显式清空这五字段，旧 approved 不残留。
+> 审批经 LangGraph `interrupt`/`Command(resume)` + checkpointer 挂起/恢复；
+> resume 后对同一 canonical request 重新执行当前 Policy，仅当仍允许 + `ApprovalEngine.consume`
+> 单次消费成功才授权到达 Execute boundary（M1A 只到 Execute boundary，未实现生产 execute）。
+> 详见 ADR-0005、ADR-0011。
 
 ### 2.2 Capability Gateway（`src/physical_agent/policy/`）
 

@@ -26,7 +26,7 @@ from physical_agent.runtime.graph import (
     route_after_reason,
     route_after_verify,
 )
-from physical_agent.runtime.planning import ReasoningRoute
+from physical_agent.runtime.planning import PolicyRoute, ReasoningRoute
 from physical_agent.runtime.state import WorldState
 from physical_agent.verification.evidence import VerificationEvidence
 
@@ -93,9 +93,9 @@ def test_expected_node_names_present():
 # ---- 路由函数（unit，派生自真实 VerificationEvidence）----
 
 def test_route_after_policy():
-    assert route_after_policy({"policy_verdict": "approved"}) == "execute"
-    assert route_after_policy({"policy_verdict": "rejected"}) == "escalate"
-    assert route_after_policy({"policy_verdict": "needs_approval"}) == "human_review"
+    assert route_after_policy({"policy_route": PolicyRoute.APPROVED}) == "execute"
+    assert route_after_policy({"policy_route": PolicyRoute.REJECTED}) == "escalate"
+    assert route_after_policy({"policy_route": PolicyRoute.NEEDS_APPROVAL}) == "human_review"
     assert route_after_policy({}) == "escalate"  # fail-closed default
 
 
@@ -142,7 +142,7 @@ def test_state_propagates_through_real_graph():
 
     def policy_gate(state):
         visited.append("policy_gate")
-        return {"policy_verdict": "approved", "needs_human_review": False}
+        return {"policy_route": PolicyRoute.APPROVED, "needs_human_review": False}
 
     def execute(state):
         visited.append("execute")
@@ -184,7 +184,7 @@ def test_real_verification_evidence_used():
     handlers = _make_handlers(
         [],
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
-        policy_gate=lambda s: {"policy_verdict": "approved"},
+        policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
         verify=lambda s: {"verification": _sim_verification("confirmed")},
     )
     graph = build_graph(handlers)
@@ -201,7 +201,7 @@ def test_conditional_success_route():
     handlers = _make_handlers(
         visited,
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
-        policy_gate=lambda s: {"policy_verdict": "approved"},
+        policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
         verify=lambda s: {"verification": _sim_verification("confirmed")},
     )
     graph = build_graph(handlers)
@@ -223,7 +223,7 @@ def test_conditional_retry_route():
     handlers = _make_handlers(
         visited,
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
-        policy_gate=lambda s: {"policy_verdict": "approved"},
+        policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
         verify=verify,
     )
     graph = build_graph(handlers)
@@ -237,7 +237,7 @@ def test_conditional_compensate_route():
     handlers = _make_handlers(
         visited,
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
-        policy_gate=lambda s: {"policy_verdict": "approved"},
+        policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
         verify=lambda s: {"verification": _sim_verification("failed"), "retry_count": 2},
     )
     graph = build_graph(handlers)
@@ -251,7 +251,7 @@ def test_policy_reject_route():
     handlers = _make_handlers(
         visited,
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
-        policy_gate=lambda s: {"policy_verdict": "rejected"},
+        policy_gate=lambda s: {"policy_route": PolicyRoute.REJECTED},
     )
     graph = build_graph(handlers)
     graph.invoke({"messages": []})
@@ -285,7 +285,7 @@ def test_approval_boundary_route():
         visited,
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {
-            "policy_verdict": "needs_approval",
+            "policy_route": PolicyRoute.NEEDS_APPROVAL,
             "needs_human_review": True,
             "approval_id": "apv_1234567890ab",
             "canonical_request_hash": "sha256:deadbeef",
@@ -328,7 +328,7 @@ def test_messages_accumulate_via_add_messages_in_graph():
         [],
         perceive=lambda s: {"messages": [HumanMessage(content="p", id="m1")], "route": ReasoningRoute.DIRECT},
         recall=lambda s: {"messages": [HumanMessage(content="r", id="m2")]},
-        policy_gate=lambda s: {"policy_verdict": "approved"},
+        policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
         verify=lambda s: {"verification": _sim_verification("confirmed")},
     )
     graph = build_graph(handlers)
@@ -348,7 +348,7 @@ async def test_real_async_node():
 
     async def policy_gate(state):
         visited.append("policy_gate")
-        return {"policy_verdict": "approved"}
+        return {"policy_route": PolicyRoute.APPROVED}
 
     async def verify(state):
         visited.append("verify")

@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from physical_agent.runtime.planning import MemoryContext, Plan, ReasoningDecision, ReasoningRoute
+from physical_agent.runtime.planning import (
+    MemoryContext,
+    Plan,
+    PolicyRoute,
+    ReasoningDecision,
+    ReasoningRoute,
+)
 from physical_agent.runtime.state import AgentState, WorldState
 from physical_agent.verification.evidence import VerificationEvidence
 
@@ -91,7 +97,10 @@ def test_agent_state_schema_has_architecture_fields():
         "approval_id",
         "canonical_request_hash",
         "route",
-        "policy_verdict",
+        "policy_route",
+        "policy_decision",
+        "current_request",
+        "policy_reject_reason",
     }
     assert required <= set(annotations)
 
@@ -114,6 +123,7 @@ def test_agent_state_reuses_m0_and_w2_types():
     assert hints["reasoning"] == ReasoningDecision | None
     assert hints["current_plan"] == Plan | None
     assert hints["route"] == ReasoningRoute
+    assert hints["policy_route"] == PolicyRoute
 
 
 def test_agent_state_routing_uses_typed_contract_not_bool():

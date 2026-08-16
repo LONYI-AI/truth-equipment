@@ -1,12 +1,14 @@
-"""M1A-W2 REV2 状态模型：AgentState（LangGraph 状态 schema）+ WorldState。
+"""M1A-W3 状态模型：AgentState（LangGraph 状态 schema）+ WorldState。
 
-设计约束（W0.1 语义 + M1A-W1 授权 + W2 REV2 整改）：
+设计约束（W0.1 语义 + M1A-W1 授权 + W2 REV3 + W3 整改）：
 - 复用 M0 `VerificationEvidence` 作为验证状态（不另造第二个 verification schema）。
 - `messages` 用 LangGraph 官方 `add_messages` reducer（按消息 ID 去重/更新，非 list 拼接）。
 - WorldState 的 `source` / `provenance` 用显式 Literal 类型并校验组合一致性。
 - `observed_at` 用 timezone-aware datetime（拒绝空值/naive/malformed 时间）。
-- 复用 M0 `UserIntent`（intent）、M0 `CapabilityRequest`（经 Plan.steps）。
+- 复用 M0 `UserIntent`（intent）、M0 `CapabilityRequest`（经 Plan.steps / current_request）。
 - Reason → Graph 路由用 typed contract `ReasoningRoute`（非单一 bool）。
+- Policy → Graph 路由用 typed contract `PolicyRoute`（由本轮真实 M0 `PolicyDecision`
+  确定性派生，非字符串 `policy_verdict`）。
 - 审批挂起边界保留 `approval_id` / `canonical_request_hash`（兼容 M0 `ApprovalRequest`）。
 """
 
@@ -20,10 +22,13 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from physical_agent.capability.request import CapabilityRequest
+from physical_agent.policy.engine import PolicyDecision
 from physical_agent.runtime.base import UserIntent
 from physical_agent.runtime.planning import (
     MemoryContext,
     Plan,
+    PolicyRoute,
     ReasoningDecision,
     ReasoningRoute,
 )
@@ -84,11 +89,11 @@ class WorldState(BaseModel):
 
 
 class AgentState(TypedDict, total=False):
-    """LangGraph 状态 schema（M1A-W2 REV2，架构级概念，见 ARCHITECTURE.md §2.1）。
+    """LangGraph 状态 schema（M1A-W3，架构级概念，见 ARCHITECTURE.md §2.1）。
 
     这是 graph 内部状态，不是 M0 `AgentResult` 的重复定义；M0 `AgentRuntime`
     协议（run/resume/cancel）保持不变。除架构字段外，附带**已论证的路由信号**
-    （`route`、`policy_verdict`）与审批挂起元数据，均非验收专用字段。
+    （`route`、`policy_route`）与审批挂起元数据，均非验收专用字段。
     """
 
     # 会话消息（官方 add_messages reducer：按 ID 去重/更新，非 list 拼接）
@@ -103,6 +108,10 @@ class AgentState(TypedDict, total=False):
     reasoning: ReasoningDecision | None
     # 当前计划（Plan 输出，复用 M0 CapabilityRequest）
     current_plan: Plan | None
+    # 本轮 canonical CapabilityRequest（Policy Gate 从 PLAN.steps / DIRECT reasoning 派生）
+    current_request: CapabilityRequest | None
+    # 本轮真实 PolicyDecision（复用 M0 PolicyEngine.evaluate 输出）
+    policy_decision: PolicyDecision | None
     # 执行历史（accumulate：append 语义）
     execution_history: Annotated[list[dict[str, Any]], add]
     # 验证结果：复用 M0 冻结的 VerificationEvidence（含 level / evidence / physical_effect）
@@ -121,5 +130,8 @@ class AgentState(TypedDict, total=False):
     # Reason → Graph 路由状态（typed contract）：
     #   PLAN → plan 节点；DIRECT → policy_gate；NOOP/缺失 → 安全终态（END）
     route: ReasoningRoute
-    # policy_gate 判定结果：approved / rejected / needs_approval
-    policy_verdict: str
+    # Policy → Graph 路由状态（typed contract，由本轮真实 PolicyDecision 确定性派生）：
+    #   APPROVED → execute；NEEDS_APPROVAL → human_review；REJECTED/缺失 → escalate
+    policy_route: PolicyRoute
+    # fail-closed 诊断：canonical request 提取失败 / evaluate 异常时的拒绝原因
+    policy_reject_reason: str | None
