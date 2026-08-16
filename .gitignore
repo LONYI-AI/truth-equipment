@@ -41,6 +41,8 @@ htmlcov/
 .coverage.*
 build/
 dist/
+*.zip
+*.tar.gz
 
 # ===== Node =====
 node_modules/
