@@ -82,19 +82,20 @@ dev env
 |---|---|---|---|
 | M1A-01 | 实现 Fake HA Server | tests/fake_ha_server.py | 可启动，返回预设 fixture 数据 |
 | M1A-02 | 实现 Mock LLM（可选 Ollama）| tests/mock_llm.py | 返回预定义 tool_call 或文本 |
-| M1A-03 | LangGraph State Machine 骨架 | src/physical_agent/runtime/graph.py | State 定义完整；节点函数签名正确 |
+| M1A-03 | LangGraph StateGraph 骨架 | src/physical_agent/runtime/ | State 定义完整；节点签名正确；LangGraph 依赖先按官方文档确认并 pin 兼容版本（Python 3.12），禁止 mock StateGraph 冒充集成 |
 | M1A-04 | 实现 Perceive 节点 | src/physical_agent/runtime/nodes/perceive.py | 从 Fake HA 读取状态并更新 world_state |
 | M1A-05 | 实现 Reason + Plan 节点 | src/physical_agent/runtime/nodes/reason.py | LLM 输出解析为结构化 Plan |
-| M1A-06 | 实现 Policy Gate | src/physical_agent/policy/__init__.py | Tier 分级；参数校验；速率限制；Tier 2 阻塞 |
-| M1A-07 | 实现 Tool Gateway | src/physical_agent/safety/__init__.py | Schema 校验；审计埋点；HA client 封装 |
+| M1A-06 | 集成/复用已有 Policy Engine | src/physical_agent/policy/ | 在 graph 中演练风险分级、参数校验、速率限制、审批（不重建 M0 组件）|
+| M1A-07 | 集成已有 CapabilityGateway + 模拟 adapter | src/physical_agent/safety/ | Adapter abstraction / Fake HA / Mock Adapter 集成（不涉及真实 HA/设备）|
 | M1A-08 | 实现 Execute 节点 | src/physical_agent/runtime/nodes/execute.py | 经 Gateway 调用工具；错误处理 |
-| M1A-09 | 实现模拟验证器 | src/physical_agent/verification/mock_verifier.py | 返回预设 VerificationResult |
-| M1A-10 | 实现 Memory 子系统（SQLite + Qdrant stub）| src/physical_agent/memory/__init__.py | Episodic 写入 SQLite；Semantic 写入 Qdrant（或 mock）|
-| M1A-11 | 实现 Audit 子系统 | src/physical_agent/audit/__init__.py | JSONL append-only；correlation ID；链式哈希 |
-| M1A-12 | 实现 Kill Switch | src/physical_agent/policy/kill_switch.py | 文件开关；自动触发条件 |
+| M1A-09 | 实现模拟验证器 | src/physical_agent/verification/mock_verifier.py | 返回预设 VerificationResult；证据明确带 SIMULATED provenance（不冒充真实物理证据）|
+| M1A-10 | 集成/复用已有 SqliteMemoryStore | src/physical_agent/memory/ | 在 Agent loop 中演练 episodic + structured semantic；Qdrant = planned adapter，M1A 不部署、不作验收依赖 |
+| M1A-11 | 集成/复用已有 persistent AuditStore | src/physical_agent/audit/ | 跨 graph 阶段记录 correlation ID、链式哈希（不重建）|
+| M1A-12 | 集成/复用已有 KillSwitch | src/physical_agent/policy/kill_switch.py | 演练 fail-closed 并加 regression 测试（不重建）|
 | M1A-13 | 单元测试（≥20 个）| tests/test_*.py | 核心逻辑覆盖 |
 | M1A-14 | 集成测试：正常流程 E2E | tests/integration/test_normal_flow.py | "开空调 26 度"完整流程通过 |
-| M1A-15 | 故障注入测试 | tests/integration/test_failure_injection.py | IR 未命中、验证超时、LLM 幻觉参数越界、Policy 拒绝 |
+| M1A-15 | 故障注入测试 | tests/integration/test_failure_injection.py | simulated verification failure、simulated actuator no-effect、verification timeout、LLM 幻觉参数越界、Policy 拒绝 |
+| M1A-16 | 审批挂起/恢复（suspend/resume）| src/physical_agent/runtime/ | 保留 session/correlation/canonical request；审批单次消费；拒绝/过期/重放不执行 |
 
 ### 3.2 关键测试用例
 
@@ -121,7 +122,7 @@ def test_tier2_requires_human_approval():
 
 # Kill Switch
 def test_kill_switch_blocks_writes():
-    """激活 kill switch → Tier 1 操作被拒绝"""
+    """激活 kill switch → 所有 side-effecting 写操作被拒绝（只读放行，按 side_effect 判定）"""
 
 # 速率限制
 def test_rate_limit_exceeded():

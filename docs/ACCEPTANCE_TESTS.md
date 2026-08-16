@@ -147,36 +147,60 @@ test_adr_completeness():
 
 ## 3. Milestone 1A 验收标准（模拟闭环）
 
-### AC-M1A-01: 正常流程闭环
+### AC-M1A-01: 正常流程闭环（模拟验证）
 
 **场景**：用户说"把空调打开到 26 度制冷"
+
+> **M1A 语义（W0.1 规范化）**：M1A 为全模拟闭环。verification 只能使用明确标记为
+> **SIMULATED VERIFICATION EVIDENCE** 的 deterministic fixture / mock verifier 结果。
+> 不得声称获得真实 IR 回读 / 真实声学确认 / 真实物理效果，不得预设经验置信度阈值（如 0.9）。
 
 ```python
 @pytest.mark.acceptance
 @pytest.mark.asyncio
 async def test_full_loop_open_ac_normal():
     """
-    Given: Fake HA 返回空调 off，室温 28℃
+    Given: Fake HA 返回空调 off，室温 28℃；模拟验证器 fixture 返回 confirmed 类 verdict
     When: 用户输入"打开空调到26度"
     Then:
       1. perceive → world_state 更新
       2. reason → LLM 输出 turn_on_ac(temp=26, mode=cool)
       3. plan → 结构化 Plan 对象
-      4. policy_gate → Tier 2 → 阻塞等待确认
-      5. 人工批准 → approved
-      6. execute → HA API called with correct params
-      7. verify → IR 回读成功 + 声学检测成功 → confirmed
-      8. memory_update → episodic + semantic 已写入
-      9. audit log → 12+ 条记录，correlation ID 一致
-      10. 返回用户："已为您开启空调制冷 26℃，已确认响应。"
+      4. policy_gate → 上下文风险分级 → Tier 2 → 阻塞等待确认
+      5. 人工批准 → approved（审批单次消费）
+      6. execute → 经 CapabilityGateway 调用 Mock Adapter（模拟设备，非真实 HA）
+      7. verify → simulated verifier 被调用 → verdict 按 deterministic fixture 返回
+      8. graph 根据 verdict 正确进入 success 分支（全程不产生任何 PHYSICAL execute()）
+      9. memory_update → episodic + structured semantic 已写入（SQLite）
+      10. audit log → correlation ID 一致、事件链完整、可 load_and_verify()
     """
     result = await agent.run("打开空调到26度")
-    assert result.success is True
-    assert result.verification.confidence >= 0.9
-    assert len(audit_log.get_records(result.correlation_id)) >= 12
+    assert result.status == "completed"          # 真实字段 AgentResult.status（不新增 result 字段）
+
+    # 1. 模拟验证器被调用
+    assert simulated_verifier.was_called() is True
+
+    # 2. 产生的 VerificationEvidence（M0 已冻结类型）明确标记 simulation provenance；
+    #    level 由 deterministic fixture 决定，不预设经验置信度
+    verification = simulated_verifier.last_evidence
+    assert verification.evidence["provenance"] == "simulated"
+    assert verification.level == fixture_verdict.level
+
+    # 3. 无物理执行：通过 adapter registry / domain spy 观察——SIMULATION 域收到执行，
+    #    PHYSICAL 域 adapter 从未被调用（不新增 result 字段）
+    assert simulation_adapter.invocation_count == 1
+    assert physical_domain_adapter.invocation_count == 0
+
+    # 4. 审计链完整
+    assert audit_log.load_and_verify() is True
+    assert len(audit_log.get_records(result.correlation_id)) >= 11
 ```
 
-**通过条件**：断言全部通过 ✅
+> 注：验收契约保持**语义级**（W1 的精确 graph result 形状尚未定义）。断言只依赖
+> M0 已冻结字段（`AgentResult.status` / `VerificationEvidence.level` / `VerificationEvidence.evidence`）
+> 与测试侧观察（verifier spy / adapter registry），**不新增任何 result 字段**。
+
+**通过条件**：模拟验证器被调用 ✅；证据带 simulation provenance ✅；PHYSICAL adapter 未被调用 ✅；审计链完整 ✅
 
 ### AC-M1A-02: LLM 参数越界拦截
 
@@ -248,9 +272,13 @@ async def test_verification_failure_compensate():
 
 **通过条件**：补偿逻辑触发 ✅；升级通知发送 ✅
 
-### AC-M1A-05: Tier 2 人工确认流程
+### AC-M1A-05: Tier 2 人工确认流程（审批单次使用 + 防重放）
 
 **场景**：开启空调需要人工批准
+
+> **M1A 语义（W0.1 规范化）**：批准路径与拒绝路径必须使用**两个独立** approval request。
+> 复用 M0 已冻结的 ApprovalEngine 单次使用 / 过期 / 绑定 / 防重放语义，
+> 不得为匹配旧验收伪代码而弱化。第二次消费同一审批必须失败。
 
 ```python
 @pytest.mark.acceptance
@@ -262,46 +290,69 @@ async def test_tier2_human_approval_flow():
     Then:
       1. 状态变为 awaiting_approval
       2. 不自动执行
-      3. 模拟管理员批准 → 执行
-      4. 模拟管理员拒绝 → 不执行，记录原因
+      3. 批准路径（独立请求 a）→ 消费一次 → 执行
+      4. 拒绝路径（独立请求 b）→ 关闭一次 → 不执行
     """
-    # 测试批准路径
-    approval_req = await agent.request_approval(tool_call)
-    assert approval_req.status == "awaiting"
+    # 批准路径（独立 approval request a）
+    approval_req_a = await agent.request_approval(tool_call)
+    assert approval_req_a.status == "awaiting"
 
-    result_approved = await agent.execute_after_approval(approval_req.id, approve=True)
+    result_approved = await agent.execute_after_approval(approval_req_a.id, approve=True)
     assert result_approved.executed is True
 
-    # 测试拒绝路径
-    result_rejected = await agent.execute_after_approval(approval_req.id, approve=False)
+    # 防重放 regression：第二次消费 approval_req_a 必须失败
+    with pytest.raises(ApprovalError):
+        await agent.execute_after_approval(approval_req_a.id, approve=True)
+
+    # 拒绝路径（独立 approval request b）
+    approval_req_b = await agent.request_approval(tool_call)
+    result_rejected = await agent.execute_after_approval(approval_req_b.id, approve=False)
     assert result_rejected.executed is False
     assert result_rejected.rejection_reason is not None
+    # 拒绝后同样被关闭/消费一次，不可再消费
+    with pytest.raises(ApprovalError):
+        await agent.execute_after_approval(approval_req_b.id, approve=True)
 ```
 
-**通过条件**：批准/拒绝两条路径正确 ✅
+**通过条件**：批准/拒绝两条独立路径正确 ✅；防重放（第二次消费失败）✅
 
-### AC-M1A-06: Kill Switch 生效
+### AC-M1A-06: Kill Switch 生效（按 side_effect 语义）
 
 **场景**：激活 Kill Switch 后写操作被阻止
+
+> **M1A 语义（W0.1 规范化）**：Kill Switch 硬不变量 = 「所有 side-effecting / write 操作被阻止、
+> read-only 操作放行」。是否写操作由 `side_effect` / `operation` 元数据决定，**不得按 risk tier 推断**。
 
 ```python
 @pytest.mark.acceptance
 def test_kill_switch_blocks_writes():
     """
     Given: Kill Switch 已激活
-    When: 尝试执行任何 Tier ≥ 1 的操作
+    When: 尝试执行任何 side_effect != NONE 的操作
     Then: 抛出 OperationBlockedError
     """
     kill_switch.activate()
     with pytest.raises(OperationBlockedError):
-        policy_gate.check(tier=1_operation)
+        policy_gate.check(write_operation)   # side_effect = REVERSIBLE_WRITE / IRREVERSIBLE_WRITE
 
-    # Tier 0 读操作不受影响
-    result = policy_gate.check(tier=0_read_operation)
+    # 只读操作（side_effect = NONE, operation = OBSERVE）不受影响
+    result = policy_gate.check(read_only_operation)
     assert result.approved is True
+
+def test_kill_switch_fail_closed_regardless_of_context_risk():
+    """
+    Regression（W0.1 新增）：即使上下文风险分级变化，side-effecting 操作在
+    Kill Switch active 时仍必须 fail-closed 被阻止。risk tier 只影响审批策略，
+    不是 write/read 分类来源。
+    """
+    kill_switch.activate()
+    with pytest.raises(OperationBlockedError):
+        policy_gate.check(write_operation, context=RiskContext(time_of_day="day"))
+    with pytest.raises(OperationBlockedError):
+        policy_gate.check(write_operation, context=RiskContext(time_of_day="night"))
 ```
 
-**通过条件**：写操作被阻止 ✅；读操作正常 ✅
+**通过条件**：side-effecting 写操作被阻止 ✅；只读操作放行 ✅；上下文风险变化不影响 fail-closed ✅
 
 ### AC-M1A-07: 速率限制生效
 
@@ -371,16 +422,18 @@ def test_audit_log_integrity():
         expected = sha256(records[i-1].hash + canonical(records[i])).hexdigest()
         assert records[i].hash == expected, f"chain broken at {i}"
 
-    # 验证 checkpoint 签名（HMAC，密钥与 Agent Runtime 隔离）
-    for cp in audit_log.get_checkpoints():
-        assert hmac_verify(cp.data, cp.signature, signing_public_key)
+    # 验证 checkpoint 签名：复用 M0 已冻结的 persistent audit checkpoint HMAC 机制。
+    # 不引入 "HMAC public key" 概念；使用 checkpoint verification key / HMAC secret。
+    assert audit_log.load_and_verify() is True  # 内部校验 HMAC 签名 + 链尾一致 + tamper detection
 
     # 验证脱敏
     for r in records:
         assert "token" not in str(r.data).lower() or "***" in str(r.data)
 ```
 
-> 注：`canonical()` 为事件规范化序列化（字段顺序固定、UTF-8）；`sha256`/`hmac_verify` 为标准库 `hashlib`/`hmac`（**非** `hash()`）。
+> 注：`canonical()` 为事件规范化序列化（字段顺序固定、UTF-8）；链式哈希与 checkpoint HMAC 复用
+> M0 已验证的 audit 实现（`load_and_verify()` / `verify_checkpoint()`，标准库 `hashlib`/`hmac`，**非** `hash()`），
+> 不引入 "HMAC public key" 概念。
 
 **通过条件**：事件完整 ✅；correlation ID 一致 ✅；链式哈希正确 ✅；脱敏完成 ✅
 
@@ -397,6 +450,103 @@ test_coverage_threshold():
 ```
 
 **通过条件**：总覆盖率 ≥80%，关键模块更高 ✅
+
+### AC-M1A-10: 审批挂起/恢复（suspend/resume）
+
+**场景**：审批等待期间 graph 安全挂起，人工决定后恢复
+
+> **M1A 语义（W0.1 规范化）**：LangGraphRuntime.resume() 是 M1A 真实缺口（M0 为 stub）。
+> 验收契约只约束**可观察不变量**，复用 M0 已冻结协议：`AgentRuntime.run(UserIntent, RuntimeContext)`
+> 与 `AgentRuntime.resume(session_id, RuntimeEvent)`；审批绑定用 `ApprovalRequest.canonical_request_hash`
+> 并绑定 `correlation_id / principal / device_id / capability_id / canonical_request_hash / risk_tier`。
+> 内部 LangGraph checkpoint/state API 在 W1 依官方文档选定，**不在 W0.1 冻结**。
+
+```python
+@pytest.mark.acceptance
+@pytest.mark.asyncio
+class TestApprovalSuspendResume:
+    """四个独立场景，各自使用独立 approval request。"""
+
+    # 场景 1：approve → resume → 恰好执行一次
+    async def test_approve_executes_exactly_once(self, agent, simulation_adapter):
+        result = await agent.run(
+            UserIntent(text="打开空调到26度", session_id="s1"),
+            RuntimeContext(correlation_id="c1", session_id="s1"),
+        )
+        assert result.status == "needs_approval"          # A. 初始 run 返回/进入 needs_approval
+        approval_id = result.evidence["approval_id"]      # B. runtime 保留 approval_id + correlation_id
+
+        resumed = await agent.resume(                     # C. RuntimeEvent 风格审批决策
+            "s1", RuntimeEvent(event_type="approval_decision",
+                               payload={"approval_id": approval_id, "decision": "approve"}),
+        )
+        assert resumed.status == "completed"
+        assert simulation_adapter.invocation_count == 1   # 恰好执行一次
+
+    # 场景 2：reject → 执行次数保持 0
+    async def test_reject_never_executes(self, agent, simulation_adapter):
+        result = await agent.run(
+            UserIntent(text="打开空调到26度", session_id="s2"),
+            RuntimeContext(correlation_id="c2", session_id="s2"),
+        )
+        assert result.status == "needs_approval"
+        approval_id = result.evidence["approval_id"]
+
+        resumed = await agent.resume(
+            "s2", RuntimeEvent(event_type="approval_decision",
+                               payload={"approval_id": approval_id, "decision": "reject"}),
+        )
+        assert resumed.status in ("rejected", "completed")   # 语义：未执行
+        assert simulation_adapter.invocation_count == 0      # 拒绝后执行 0
+
+    # 场景 3：过期审批 → resume 被拒绝 → 执行 0（确定性时间控制，不 sleep）
+    async def test_expired_approval_never_executes(self, agent, simulation_adapter, clock):
+        result = await agent.run(
+            UserIntent(text="打开空调到26度", session_id="s3"),
+            RuntimeContext(correlation_id="c3", session_id="s3"),
+        )
+        assert result.status == "needs_approval"
+        approval_id = result.evidence["approval_id"]
+
+        clock.advance(ttl_seconds + 1)                      # 越过过期点（injectable clock）
+
+        with pytest.raises(ApprovalError):
+            await agent.resume(
+                "s3", RuntimeEvent(event_type="approval_decision",
+                                   payload={"approval_id": approval_id, "decision": "approve"}),
+            )
+        assert simulation_adapter.invocation_count == 0      # 过期不执行
+
+    # 场景 4：重放已消费审批 → ApprovalError → 不产生第二次执行
+    async def test_replay_consumed_approval_fails(self, agent, simulation_adapter):
+        result = await agent.run(
+            UserIntent(text="打开空调到26度", session_id="s4"),
+            RuntimeContext(correlation_id="c4", session_id="s4"),
+        )
+        assert result.status == "needs_approval"
+        approval_id = result.evidence["approval_id"]
+
+        await agent.resume("s4", RuntimeEvent(event_type="approval_decision",
+                                              payload={"approval_id": approval_id, "decision": "approve"}))
+        assert simulation_adapter.invocation_count == 1
+
+        with pytest.raises(ApprovalError):                  # F. ApprovalEngine.consume 保持 exactly-once
+            await agent.resume(
+                "s4", RuntimeEvent(event_type="approval_decision",
+                                   payload={"approval_id": approval_id, "decision": "approve"}),
+            )
+        assert simulation_adapter.invocation_count == 1      # 无第二次执行
+```
+
+**不变量**：
+- A. 初始 run 返回/进入 `needs_approval`
+- B. runtime 保留 `session_id` / `correlation_id` / `approval_id` / `canonical_request_hash`
+- C. resume 用 `RuntimeEvent` 风格审批决策
+- D. 批准的 resume 只执行 canonical hash 与审批匹配的那个请求
+- E. 重新规划不得改动 `principal` / `device_id` / `capability_id` / `parameters`
+- F. `ApprovalEngine.consume` 保持 exactly-once
+
+**通过条件**：approve=执行一次 ✅；reject=执行 0 ✅；expire=执行 0 ✅；replay=ApprovalError ✅
 
 ---
 
