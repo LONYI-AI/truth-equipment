@@ -114,8 +114,13 @@ class AgentState(TypedDict, total=False):
     policy_decision: PolicyDecision | None
     # 执行历史（accumulate：append 语义）
     execution_history: Annotated[list[dict[str, Any]], add]
+    # 执行结果（Execute 节点把 gateway outcome 存这里，供 Verify 节点消费）
+    execution_outcome: dict[str, Any] | None
     # 验证结果：复用 M0 冻结的 VerificationEvidence（含 level / evidence / physical_effect）
     verification: VerificationEvidence | None
+    # 验证是否满足 capability.required_verification_level（真实生产路由信号）。
+    # 不伪造 physical_effect=="confirmed"；V2 达 required 即可 satisfied，但绝不冒充 V4。
+    verification_satisfied: bool
     # 会话 / 追踪
     session_id: str
     correlation_id: str

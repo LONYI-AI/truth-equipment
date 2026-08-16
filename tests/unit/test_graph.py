@@ -100,14 +100,11 @@ def test_route_after_policy():
 
 
 def test_route_after_verify():
-    confirmed = _sim_verification("confirmed")
-    failed = _sim_verification("failed")
-    assert route_after_verify({"verification": confirmed}) == "memory_update"
-    assert route_after_verify({"verification": failed, "retry_count": 0}) == "execute"
-    assert route_after_verify({"verification": failed, "retry_count": 1}) == "execute"
-    assert route_after_verify({"verification": failed, "retry_count": 2}) == "compensate"
-    # 无 verification 视为失败 → 重试
-    assert route_after_verify({"retry_count": 0}) == "execute"
+    assert route_after_verify({"verification_satisfied": True}) == "memory_update"
+    # W4 REV2：失败 / 缺失一律 fail-closed 到 compensate boundary（不再回 execute 重试）
+    assert route_after_verify({"verification_satisfied": False}) == "compensate"
+    assert route_after_verify({"verification_satisfied": False, "retry_count": 0}) == "compensate"
+    assert route_after_verify({}) == "compensate"  # 缺失 → fail-closed
 
 
 def test_route_after_reason():
@@ -150,7 +147,7 @@ def test_state_propagates_through_real_graph():
 
     def verify(state):
         visited.append("verify")
-        return {"verification": _sim_verification("confirmed")}
+        return {"verification": _sim_verification("confirmed"), "verification_satisfied": True}
 
     def memory_update(state):
         visited.append("memory_update")
@@ -185,7 +182,7 @@ def test_real_verification_evidence_used():
         [],
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
-        verify=lambda s: {"verification": _sim_verification("confirmed")},
+        verify=lambda s: {"verification": _sim_verification("confirmed"), "verification_satisfied": True},
     )
     graph = build_graph(handlers)
     result = graph.invoke({"messages": []})
@@ -202,7 +199,7 @@ def test_conditional_success_route():
         visited,
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
-        verify=lambda s: {"verification": _sim_verification("confirmed")},
+        verify=lambda s: {"verification": _sim_verification("confirmed"), "verification_satisfied": True},
     )
     graph = build_graph(handlers)
     graph.invoke({"messages": []})
@@ -210,15 +207,12 @@ def test_conditional_success_route():
     assert "compensate" not in visited
 
 
-def test_conditional_retry_route():
+def test_conditional_verify_failure_fail_closed_to_compensate():
+    """W4 REV2：verification failure fail-closed → compensate，不回 execute 重试。"""
     visited: list[str] = []
-    verify_calls: list[int] = []
 
     def verify(state):
-        verify_calls.append(1)
-        if len(verify_calls) == 1:
-            return {"verification": _sim_verification("failed"), "retry_count": 1}
-        return {"verification": _sim_verification("confirmed")}
+        return {"verification": _sim_verification("failed"), "verification_satisfied": False}
 
     handlers = _make_handlers(
         visited,
@@ -228,8 +222,9 @@ def test_conditional_retry_route():
     )
     graph = build_graph(handlers)
     graph.invoke({"messages": []})
-    assert visited.count("execute") == 2  # 失败 → retry → 成功
-    assert "memory_update" in visited
+    assert visited.count("execute") == 1  # execute 只调用一次，不重复
+    assert "compensate" in visited
+    assert "memory_update" not in visited
 
 
 def test_conditional_compensate_route():
@@ -238,7 +233,10 @@ def test_conditional_compensate_route():
         visited,
         reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
-        verify=lambda s: {"verification": _sim_verification("failed"), "retry_count": 2},
+        verify=lambda s: {
+            "verification": _sim_verification("failed"),
+            "verification_satisfied": False,
+        },
     )
     graph = build_graph(handlers)
     graph.invoke({"messages": []})
@@ -329,7 +327,7 @@ def test_messages_accumulate_via_add_messages_in_graph():
         perceive=lambda s: {"messages": [HumanMessage(content="p", id="m1")], "route": ReasoningRoute.DIRECT},
         recall=lambda s: {"messages": [HumanMessage(content="r", id="m2")]},
         policy_gate=lambda s: {"policy_route": PolicyRoute.APPROVED},
-        verify=lambda s: {"verification": _sim_verification("confirmed")},
+        verify=lambda s: {"verification": _sim_verification("confirmed"), "verification_satisfied": True},
     )
     graph = build_graph(handlers)
     result = graph.invoke({"messages": []})
@@ -352,7 +350,7 @@ async def test_real_async_node():
 
     async def verify(state):
         visited.append("verify")
-        return {"verification": _sim_verification("confirmed")}
+        return {"verification": _sim_verification("confirmed"), "verification_satisfied": True}
 
     handlers = _make_handlers(visited, perceive=perceive, policy_gate=policy_gate, verify=verify)
     graph = build_graph(handlers)

@@ -119,19 +119,21 @@ def route_after_human_review(state: AgentState) -> str:
 
 
 def route_after_verify(state: AgentState) -> str:
-    """verify 路由，派生自 M0 `VerificationEvidence` 语义（不另造 verdict dict）：
+    """verify 路由（W4 REV2）：成功语义 = 达到 capability.required_verification_level。
 
-    - physical_effect == "confirmed" → memory_update（成功）
-    - 否则视为失败：retry_count < 2 → execute（重试）；retry_count >= 2 → compensate（耗尽）
+    - `verification_satisfied` True → memory_update（成功终态）
+    - 否则（False / 缺失）→ compensate boundary → END（fail-closed 安全终止）
 
-    注意：W1 只编码路由逻辑，不实现 retry 计数递增等完整业务行为（属后续 M1A slice）。
+    M1A-W4 MVP 暂不实现自动 retry：verification failure 一律 fail-closed 到
+    compensate boundary，绝不回路由 execute（避免「execute → verify failed →
+    execute duplicate rejected → ...」的 recursion loop，直至 LangGraph recursion
+    limit）。正式 retry lifecycle 留待 MVP 整体 hardening。
+
+    注意：不再用 `physical_effect == "confirmed"` 判定成功——V2 达到 required_level
+    即可 satisfied，但 physical_effect 仍为 "pending"，绝不伪造 confirmed（V2 不冒充 V4）。
     """
-    verification = state.get("verification")
-    if verification is not None and verification.physical_effect == "confirmed":
+    if state.get("verification_satisfied"):
         return "memory_update"
-    retry_count = state.get("retry_count", 0)
-    if retry_count < 2:
-        return "execute"
     return "compensate"
 
 
@@ -193,11 +195,11 @@ def build_graph(handlers: NodeHandlers, checkpointer: Any = None) -> Any:
     # 执行 → 验证
     builder.add_edge("execute", "verify")
 
-    # 验证路由
+    # 验证路由（W4 REV2：成功 → memory_update；失败 → compensate boundary，不回 execute）
     builder.add_conditional_edges(
         "verify",
         route_after_verify,
-        {"memory_update": "memory_update", "execute": "execute", "compensate": "compensate"},
+        {"memory_update": "memory_update", "compensate": "compensate"},
     )
 
     # 终态 / 边界

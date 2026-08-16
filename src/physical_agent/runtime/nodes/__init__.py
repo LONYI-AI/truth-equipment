@@ -1,9 +1,10 @@
-"""M1A-W3 节点：Perceive / Recall / Reason / Plan / Policy Gate / Human Review。
+"""M1A-W4 节点：Perceive / Recall / Reason / Plan / Policy Gate / Human Review / Execute / Verify。
 
-W2 暴露 perceive/recall/reason/plan 构造工厂；W3 新增 policy_gate / human_review。
-仍不实现 execute / verify（SIMULATION-ONLY，Execute 由调用方注入 sentinel/spy）。
+W2 暴露 perceive/recall/reason/plan 构造工厂；W3 新增 policy_gate / human_review；
+W4 新增 execute（SIMULATION-only gateway 派发）/ verify（outcome → VerificationEvidence）。
 """
 
+from physical_agent.runtime.nodes.execute import make_execute_handler
 from physical_agent.runtime.nodes.human_review import make_human_review_handler
 from physical_agent.runtime.nodes.perceive import (
     PerceptionSnapshot,
@@ -19,6 +20,7 @@ from physical_agent.runtime.nodes.policy_gate import (
 )
 from physical_agent.runtime.nodes.reason import ReasoningModel, make_reason_handler
 from physical_agent.runtime.nodes.recall import RecallError, make_recall_handler
+from physical_agent.runtime.nodes.verify import make_verify_handler
 
 __all__ = [
     "PerceptionSnapshot",
@@ -35,4 +37,6 @@ __all__ = [
     "extract_canonical_request",
     "make_policy_gate_handler",
     "make_human_review_handler",
+    "make_execute_handler",
+    "make_verify_handler",
 ]

@@ -96,7 +96,7 @@ def _build_graph(policy_engine, approval_engine, decision, *, audit=None, checkp
         plan=make_plan_handler(),
         policy_gate=make_policy_gate_handler(policy_engine, approval_engine, audit=audit),
         execute=_execute_spy(visited),
-        verify=lambda s: {"verification": _sim_verification("confirmed")},
+        verify=lambda s: {"verification": _sim_verification("confirmed"), "verification_satisfied": True},
         compensate=_spy("compensate", visited),
         memory_update=_spy("memory_update", visited),
         escalate=_spy("escalate", visited),

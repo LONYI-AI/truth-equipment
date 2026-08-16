@@ -128,8 +128,8 @@ class AgentState(TypedDict):
 | `plan` | 将 LLM 输出结构化为可执行计划 | reason 输出 | 结构化 Plan |
 | `policy_gate` | 风险分级、参数校验、权限检查（复用 M0 PolicyEngine）| canonical CapabilityRequest | `PolicyRoute`：APPROVED / REJECTED / NEEDS_APPROVAL |
 | `human_review` | 审批挂起（interrupt）/ 恢复（resume）+ 重新校验 + 单次消费 | policy_decision + canonical request | `PolicyRoute`：APPROVED / REJECTED |
-| `execute` | 经 Tool Gateway 执行工具调用 | approved tools | execution_result |
-| `verify` | 物理验证：多信号确认执行结果 | execution_result | verification_result |
+| `execute` | 经 `CapabilityGateway.execute_authorized_simulation`（SIMULATION-only）派发到 MockAdapter | current_request + policy_decision | execution_outcome |
+| `verify` | 把 execution_outcome 转 `VerificationEvidence`（provenance=simulated）；`verification_satisfied` = 达到 required_level | execution_outcome | verification + verification_satisfied |
 | `compensate` | 失败处理：重试/回滚/升级 | failed verification | recovery_action |
 | `memory_update` | 更新 episodic + semantic 记忆 | full cycle result | memory_ids |
 
@@ -149,11 +149,9 @@ START → perceive → recall → reason → {route: ReasoningRoute}
                                                         ├─ APPROVED  → execute → verify
                                                         └─ REJECTED  → escalate → END
                                         │
-                                        │   verify → {verification_passed?}
+                                        │   verify → {verification_satisfied?}
                                         │              ├─ yes → memory_update → END
-                                        │              └─ no → {retry_count < 2?}
-                                        │                     ├─ yes → execute (retry)
-                                        │                     └─ no → compensate → END
+                                        │              └─ no  → compensate → END（fail-closed，不 retry）
 ```
 
 > **Reason → Graph 边界契约（M1A-W2 REV3）**：路由用 typed contract
@@ -177,8 +175,23 @@ START → perceive → recall → reason → {route: ReasoningRoute}
 > `PolicyEngine.evaluate` exception 均 fail-closed 并显式清空这五字段，旧 approved 不残留。
 > 审批经 LangGraph `interrupt`/`Command(resume)` + checkpointer 挂起/恢复；
 > resume 后对同一 canonical request 重新执行当前 Policy，仅当仍允许 + `ApprovalEngine.consume`
-> 单次消费成功才授权到达 Execute boundary（M1A 只到 Execute boundary，未实现生产 execute）。
+> 单次消费成功才授权到达 Execute boundary。
 > 详见 ADR-0005、ADR-0011。
+>
+> **Execute / Verify 边界契约（M1A-W4）**：Execute 节点经 M0
+> `CapabilityGateway.execute_authorized_simulation` 派发到 MockAdapter——该入口**硬性
+> SIMULATION-only**（`mode != SIMULATION` → fail-closed REJECT，adapter.execute 绝不调用），
+> 不重新 `PolicyEngine.evaluate`（避免 RateLimiter 双计）；PolicyDecision 不是未来 PHYSICAL
+> 的可信 authorization token（待完整 MVP 后统一 hardening）。Verify 节点复用 M0
+> `VerificationEngine` 语义，**成功 = 达到 `capability.required_verification_level`**（`status
+> == "completed"`），路由用独立 typed 信号 `verification_satisfied`，**不伪造
+> `physical_effect == "confirmed"`**（V2 达 required 即 satisfied，但 physical_effect 仍为
+> "pending"，V2 不冒充 V4）。所有模拟 `VerificationEvidence` 带 `evidence["provenance"] =
+> "simulated"`。**失败路由（REV2）**：M1A-W4 MVP 暂不实现自动 retry——`verification_satisfied`
+> False / 缺失一律 fail-closed 到 `compensate` boundary → END（不回路 execute，避免「execute
+> → verify failed → execute duplicate rejected → …」的 recursion loop 直至 LangGraph recursion
+> limit）。`compensate` 为 injected boundary（不实现真实补偿动作）。正式 retry lifecycle 留待
+> MVP 整体 hardening。
 
 ### 2.2 Capability Gateway（`src/physical_agent/policy/`）
 

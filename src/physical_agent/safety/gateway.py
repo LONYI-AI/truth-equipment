@@ -181,6 +181,72 @@ class CapabilityGateway:
 
         return await self._dispatch(request, definition, decision)
 
+    async def execute_authorized_simulation(
+        self,
+        request: CapabilityRequest,
+        decision: Any,
+        context: RiskContext | None = None,
+    ) -> dict[str, Any]:
+        """M1A-W4 SIMULATION-only 预授权派发入口。
+
+        **硬性保证**：本入口仅限 `mode == SIMULATION`。任何非 SIMULATION 模式
+        fail-closed REJECT，`adapter.execute` 绝不调用。PolicyDecision 不是未来
+        PHYSICAL 模式的可信 authorization token；本入口不解决 production
+        authorization architecture（待完整 MVP 后统一 hardening/refactor）。
+
+        语义：
+        - 不重新 `policy.evaluate`（避免 PolicyEngine/RateLimiter 二次执行）；policy
+          与 approval 已由上游 graph 生命周期（W3 `policy_gate` / `human_review`）完成。
+        - 仍 fail-closed 校验：decision 必须 `allowed`、registry allowlist、幂等。
+        - 若 decision 需审批（上游已 consume），仅推进 coordinator 状态机到 AUTHORIZED。
+        """
+        # 1. SIMULATION-only 硬边界：非 SIMULATION 一律拒绝，绝不触碰 adapter
+        if self.mode != ExecutionMode.SIMULATION:
+            self.audit.append(
+                "adapter_rejected",
+                request.correlation_id,
+                {"reason": "execute_authorized_simulation is SIMULATION-only"},
+            )
+            return {"status": "rejected", "reason": "execute_authorized_simulation is SIMULATION-only"}
+
+        # 2. 幂等 / 防重放
+        if self.coordinator.has(request.correlation_id):
+            return {"status": "rejected", "reason": f"duplicate correlation_id {request.correlation_id!r}"}
+
+        # 3. fail-closed：decision 必须为本轮已授权的 allowed 判定
+        if not decision.allowed:
+            self.audit.append("policy_rejected", request.correlation_id, {"reason": decision.reason})
+            return {"status": "rejected", "reason": decision.reason}
+
+        # 4. registry allowlist（未注册 → fail-closed）
+        try:
+            definition = self.registry.get(request.capability_id)
+        except UnknownCapabilityError as exc:
+            self.audit.append("capability_rejected", request.correlation_id, {"reason": str(exc)})
+            return {"status": "rejected", "reason": str(exc)}
+
+        self.audit.append(
+            "capability_requested",
+            request.correlation_id,
+            {"capability_id": request.capability_id, "principal": request.principal,
+             "execution_mode": self.mode.value},
+        )
+        self.audit.append(
+            "policy_evaluated",
+            request.correlation_id,
+            {"tier": int(decision.tier), "allowed": decision.allowed,
+             "requires_approval": decision.requires_approval, "reason": decision.reason},
+        )
+
+        # 5. 推进 coordinator：审批已在上游完成，若 requires_approval 则直接到 AUTHORIZED
+        if not self.coordinator.has(request.correlation_id):
+            self.coordinator.begin(request, decision)
+            if decision.requires_approval:
+                self.coordinator.approve(request.correlation_id)
+
+        # 6. 复用现有 dispatch + verify 链路
+        return await self._dispatch(request, definition, decision)
+
     # ---- 派发执行 ----
 
     async def _dispatch(self, request: CapabilityRequest, definition: Any, decision: Any) -> dict[str, Any]:
