@@ -130,6 +130,42 @@ class AuditStore:
             self._loaded = True
             self._healthy = True
 
+        # 启动时校验签名 checkpoint（HMAC + 链尾一致），检测 tail truncation / checkpoint 篡改
+        self.verify_checkpoint()
+
+    def verify_checkpoint(self) -> None:
+        """校验磁盘 checkpoint 与已恢复的链尾一致。
+
+        - 有 signing_key：校验 HMAC 签名 + last_hash 一致（真实性 + 完整性）。
+        - 无 signing_key：仅校验 last_hash 一致（完整性；无法防 checkpoint 重写）。
+
+        若 checkpoint 存在但签名或链尾不匹配 → ChainIntegrityError（并置 unhealthy），
+        用于检测 **tail truncation**（截断日志尾部后链仍自洽，但链尾与 checkpoint 不符）
+        与 checkpoint 篡改。
+        """
+        if self._checkpoint_path is None or not self._checkpoint_path.exists():
+            return
+        try:
+            saved = json.loads(self._checkpoint_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            self._healthy = False
+            raise ChainIntegrityError(f"corrupt checkpoint: {exc}") from exc
+
+        saved_last = saved.get("last_hash")
+        saved_cp = saved.get("checkpoint")
+        if self._signing_key is not None:
+            expected_cp = hmac.new(
+                self._signing_key, str(saved_last).encode(), hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(str(saved_cp), expected_cp):
+                self._healthy = False
+                raise ChainIntegrityError("checkpoint signature invalid (key mismatch or tamper)")
+        if saved_last != self._last_hash:
+            self._healthy = False
+            raise ChainIntegrityError(
+                "checkpoint tail mismatch (detected tail truncation or tamper)"
+            )
+
     def verify_file(self) -> None:
         """校验磁盘文件（不改变内存状态）。"""
         if self._path is None or not self._path.exists():

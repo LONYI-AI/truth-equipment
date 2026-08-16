@@ -18,6 +18,10 @@ from physical_agent.runtime.mock import MockRuntime
 
 RUNTIMES = [MockRuntime, LangGraphRuntime, DeepSeekHarnessRuntime]
 
+# 会真正调用 rt.run() 的运行时（DeepSeek 的真实 run 由独立 smoke test 覆盖，
+# 避免在通用 conformance 中触发真实 SDK 子进程）
+RUN_RUNTIMES = [MockRuntime, LangGraphRuntime]
+
 
 @pytest.mark.parametrize("runtime_cls", RUNTIMES)
 def test_declares_capabilities(gateway, runtime_cls):
@@ -89,7 +93,7 @@ async def test_runtime_approval_preserved(gateway, runtime_cls):
     assert outcome["status"] == "needs_approval"
 
 
-@pytest.mark.parametrize("runtime_cls", RUNTIMES)
+@pytest.mark.parametrize("runtime_cls", RUN_RUNTIMES)
 async def test_runtime_correlation_preserved(gateway, runtime_cls):
     rt = runtime_cls(gateway)
     intent = UserIntent(text="打开空调", session_id="s1")
@@ -143,15 +147,31 @@ async def test_runtime_crash_cannot_bypass_policy(gateway):
     assert outcome["status"] == "completed"
 
 
-async def test_deepseek_runtime_reports_platform_limitation(gateway):
-    """DeepSeek runtime 在 Windows 上应如实报告平台限制（不假装成功）。"""
+def test_deepseek_runtime_sdk_required_on_supported_platform(gateway):
+    """支持平台上 SDK 必须真实安装（不允许 "SDK 未装但 Harness conformance PASS"）。"""
+    rt = DeepSeekHarnessRuntime(gateway)
+    if rt.platform_supported:
+        assert rt.sdk_available, (
+            "deepseek-harness-sdk must be installed on a supported platform "
+            "(CI must install .[dev,harness]); refusing a false conformance PASS"
+        )
+    else:
+        assert not rt.sdk_available
+
+
+async def test_deepseek_runtime_honest_when_unavailable(gateway):
+    """不支持平台或 SDK 未装时，run() 必须如实 rejected，绝不伪装 completed。"""
     rt = DeepSeekHarnessRuntime(gateway)
     intent = UserIntent(text="打开空调", session_id="s1")
     ctx = RuntimeContext(correlation_id="dsh1", session_id="s1")
+    if rt.platform_supported and rt.sdk_available:
+        # 支持平台 + SDK 已装：真实运行路径由 test_deepseek_harness_smoke.py 覆盖
+        return
     result = await rt.run(intent, ctx)
-    # 在非支持平台（Windows），应返回 rejected + 平台说明，而非伪装 completed
-    if not rt.platform_supported:
-        assert result.status == "rejected"
-        assert "Linux" in result.message or "macOS" in result.message
-    else:
-        assert result.status in ("completed", "rejected", "needs_approval", "failed")
+    assert result.status == "rejected"
+    assert result.correlation_id == "dsh1"
+    assert (
+        "Linux" in result.message
+        or "macOS" in result.message
+        or "not installed" in result.message
+    )

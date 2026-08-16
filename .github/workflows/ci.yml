@@ -19,7 +19,7 @@ jobs:
       - name: Install
         run: |
           pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,harness]"
 
       - name: Lint (ruff)
         run: ruff check src tests
@@ -27,14 +27,17 @@ jobs:
       - name: Typecheck (mypy)
         run: mypy src
 
-      - name: Test (pytest)
-        run: pytest -q
+      - name: Test (pytest, excluding harness smoke)
+        run: pytest -q -m "not harness_smoke"
 
       - name: Coverage
-        run: pytest --cov=physical_agent --cov-report=term-missing -q
+        run: pytest --cov=physical_agent --cov-report=term-missing -q -m "not harness_smoke"
 
       - name: Runtime conformance
-        run: pytest tests/runtime-conformance/ -q
+        run: pytest tests/runtime-conformance/ -q -m "not harness_smoke"
+
+      - name: DeepSeek Harness smoke test (real SDK + local model proxy)
+        run: pytest -m harness_smoke -q -v
 
       - name: Policy bypass tests
         run: pytest tests/security/ -q

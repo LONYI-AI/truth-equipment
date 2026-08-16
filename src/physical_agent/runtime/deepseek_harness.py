@@ -1,24 +1,20 @@
-"""DeepSeekHarnessRuntime：innovation runtime（v3.0 §4-§10 + M0.1 P0-1）。
+"""DeepSeekHarnessRuntime：真正实例化官方 `deepseek_harness.DeepSeekHarness`（M0.1 P0-1 强化）。
 
-集成 DeepSeek 官方 Python SDK `deepseek-harness-sdk`（pin 0.1.0rc6）。
+使用 DeepSeek 官方 Python SDK（发行包 `deepseek-harness-sdk`，import 模块 `deepseek_harness`）。
+通过真实 Cordis composition（`.cordis.yml`）加载插件组合：
+- physical profile  → `harness/physical/cordis.yml`（仅 LLM + agent 核心 + 会话，无 bash/fs/editor）。
+- development profile → `harness/development/cordis.yml`（官方 coding 组合）。
 
 安全边界（v3.0 §6 + M0.1 P0-1）：
-- Harness plugin 永远不直连设备/HA Token。
-- 只能发 typed capability request，经 Physical Safety Kernel。
-- 禁止使用 Harness 默认含 bash/editor 的 composition 作为 physical runtime。
+- Harness 永远不直连设备/HA Token：物理 Cordis 组合不挂载任何可访问设备凭据的工具，
+  设备凭据（HA_TOKEN/MQTT/SSH/ADB）绝不注入 SDK 进程环境；仅 DEEPSEEK_API_KEY/BASE_URL
+  由调用方显式注入（可为本地 fake/model proxy）。
+- 物理组合不挂载 bash/shell/filesystem/editor/http/ssh/adb 工具。
+- `capability.invoke` 工具桥接 Physical Safety Kernel 属 M1A 落地（M0 为"仅规划/观察"组合）。
 
-平台限制（已知，P0-13）：
-- deepseek-harness-sdk 的运行时二进制 deepseek-harness-runtime-bin
-  仅发布 Linux x64/arm64 与 macOS 14+ arm64，**不支持 Windows**。
-- 因此本机（Windows）无法实际运行 SDK；集成代码在 Linux/macOS 生效，
-  相关测试以平台标记跳过（skip on Windows）。
-
-Runtime 能力声明（P0-2，如实）：
-- native_resume=False（SDK 不保证跨进程 session resume；workaround：
-  host-owned transcript/checkpoint + 新 native session fallback）
-- native_cancel=True（通过 host 终止 subprocess 实现）
-- persistent_session_recovery=False（host checkpoint 兜底）
-- tool_bridge=True（capability.invoke 桥接 gateway）
+平台限制（P0-13，如实）：
+- 运行时二进制仅 Linux x64/arm64、macOS 14+ arm64，**不支持 Windows**。
+- 支持平台上 SDK 必须真实安装并真实运行（不允许 "SDK 未装但 conformance PASS"）。
 """
 
 from __future__ import annotations
@@ -26,13 +22,10 @@ from __future__ import annotations
 import asyncio
 import importlib
 import platform
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from physical_agent.capability.request import CapabilityRequest
-from physical_agent.policy.risk import RiskContext
 from physical_agent.runtime.base import (
     AgentResult,
     RuntimeCapabilities,
@@ -44,6 +37,8 @@ from physical_agent.safety.gateway import CapabilityGateway
 
 # 精确 prerelease 版本（P0-1 / P0-13）：不得使用 unpinned dependency
 DSH_SDK_VERSION = "0.1.0rc6"
+DSH_MODULE = "deepseek_harness"
+DSH_CLASS = "DeepSeekHarness"
 
 # SDK 支持的平台（官方二进制仅这些）
 _SUPPORTED_PLATFORMS = {
@@ -51,6 +46,9 @@ _SUPPORTED_PLATFORMS = {
     ("linux", "arm64"),
     ("darwin", "arm64"),
 }
+
+# 仓库根目录（src/physical_agent/runtime/deepseek_harness.py -> 上溯到仓库根）
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _platform_supported() -> bool:
@@ -63,24 +61,34 @@ def _platform_supported() -> bool:
 
 
 def _sdk_available() -> bool:
-    """SDK 是否可导入（平台 + 安装检查）。"""
+    """官方 SDK 是否可真实导入（平台 + 安装检查）。"""
     if not _platform_supported():
         return False
     try:
-        importlib.import_module("deepseek_harness_sdk")
+        importlib.import_module(DSH_MODULE)
         return True
     except ImportError:
         return False
 
 
-class DeepSeekHarnessRuntime:
-    """DeepSeek Harness 创新 runtime。
+def physical_cordis_path() -> Path:
+    """物理 runtime 的真实 Cordis composition 路径。"""
+    return _REPO_ROOT / "harness" / "physical" / "cordis.yml"
 
-    通过官方 SDK 在隔离 subprocess 中运行自定义 Cordis profile。
-    capability.invoke 工具桥接到 CapabilityGateway。
+
+def development_cordis_path() -> Path:
+    """开发/Evolution 的真实 Cordis composition 路径。"""
+    return _REPO_ROOT / "harness" / "development" / "cordis.yml"
+
+
+class DeepSeekHarnessRuntime:
+    """DeepSeek Harness 创新 runtime（真实 SDK）。
+
+    通过官方 `deepseek_harness.DeepSeekHarness` 在隔离子进程中加载真实 Cordis composition。
+    支持平台 + SDK 已安装时真正运行；否则如实返回 rejected（平台/安装说明），绝不伪装 completed。
     """
 
-    # 物理 runtime profile 允许的工具（P0-1：只允许这些）
+    # 物理 runtime 允许的工具（P0-1）：M1A 桥接 capability.* 到 gateway
     PHYSICAL_ALLOWED_TOOLS = (
         "capability.list",
         "capability.describe",
@@ -108,14 +116,26 @@ class DeepSeekHarnessRuntime:
         gateway: CapabilityGateway,
         *,
         profile: str = "dsh-physical",
+        provider: str = "deepseek-official",
+        model: str = "deepseek-v4-flash",
+        max_tokens: int = 49_152,
         workspace: Path | None = None,
         session_dir: Path | None = None,
+        cordis: Path | str | None = None,
     ) -> None:
         self._gateway = gateway
         self._profile = profile
+        self._provider = provider
+        self._model = model
+        self._max_tokens = max_tokens
         self._workspace = workspace
         self._session_dir = session_dir
-        self._subprocess: subprocess.Popen | None = None
+        if cordis is not None:
+            self._cordis = Path(cordis)
+        elif profile == "dsh-physical":
+            self._cordis = physical_cordis_path()
+        else:
+            self._cordis = development_cordis_path()
         self._sessions: dict[str, dict[str, Any]] = {}
 
     @property
@@ -126,42 +146,58 @@ class DeepSeekHarnessRuntime:
     def platform_supported(self) -> bool:
         return _platform_supported()
 
+    @property
+    def sdk_available(self) -> bool:
+        return _sdk_available()
+
+    @property
+    def cordis_path(self) -> Path:
+        return self._cordis
+
     def capabilities(self) -> RuntimeCapabilities:
         return RuntimeCapabilities(
             native_resume=False,            # workaround：host transcript + 新 session
             native_cancel=True,             # subprocess termination
             persistent_session_recovery=False,
             streaming=False,
-            tool_bridge=True,               # capability.invoke → gateway
+            tool_bridge=True,               # capability.invoke → gateway（M1A）
         )
 
-    # ---- SDK 子进程生命周期 ----
+    # ---- 官方 SDK 实例化 ----
 
-    def _launch(self) -> subprocess.Popen:
-        """启动隔离的 Harness subprocess（dsh-physical profile）。"""
+    def build_harness(self) -> Any:  # pragma: no cover - 仅支持平台可执行（CI Linux smoke test 覆盖）
+        """实例化官方 `deepseek_harness.DeepSeekHarness`（真实 SDK，非 mock）。
+
+        支持平台 + SDK 已安装才允许调用；否则抛 RuntimeError（调用方不得伪装运行）。
+        """
         if not _platform_supported():
             raise RuntimeError(
                 f"deepseek-harness-sdk {DSH_SDK_VERSION} does not support "
                 f"platform {sys.platform}/{platform.machine()} (Linux x64/arm64 or macOS arm64 only)"
             )
-        # 通过 SDK 的 headless/JSON-RPC 入口启动（profile 由 DSH_PROFILE 指定）
-        cmd = [
-            sys.executable, "-m", "deepseek_harness_sdk",
-            "--profile", self._profile,
-        ]
+        if not _sdk_available():
+            raise RuntimeError(
+                f"{DSH_MODULE} not importable: install `deepseek-harness-sdk=={DSH_SDK_VERSION}` "
+                f"(pip install -e '.[dev,harness]') before running on a supported platform"
+            )
+        if not self._cordis.exists():
+            raise RuntimeError(f"Cordis composition not found: {self._cordis}")
+
+        module = importlib.import_module(DSH_MODULE)
+        harness_cls = getattr(module, DSH_CLASS)
+        kwargs: dict[str, Any] = {
+            "provider": self._provider,
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "cordis": str(self._cordis),
+        }
         if self._workspace is not None:
-            cmd += ["--workspace", str(self._workspace)]
+            kwargs["cwd"] = str(self._workspace)
         if self._session_dir is not None:
-            cmd += ["--session-dir", str(self._session_dir)]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            # 隔离：不继承设备凭据环境变量
-            env=_sane_env(),
-        )
-        self._subprocess = proc
-        return proc
+            kwargs["session_root"] = str(self._session_dir)
+        return harness_cls(**kwargs)
+
+    # ---- 运行 ----
 
     async def run(self, intent: UserIntent, context: RuntimeContext) -> AgentResult:
         if not _platform_supported():
@@ -175,40 +211,44 @@ class DeepSeekHarnessRuntime:
                     f"{sys.platform}/{platform.machine()})"
                 ),
             )
-
-        # 经 gateway 执行 capability（与 Mock/LangGraph 一致的安全路径）
-        requests = _physical_planner(intent, context.correlation_id)
-        results = []
-        for req in requests:
-            outcome = await self._gateway.execute(
-                req,
-                RiskContext(
-                    location=context.location,
-                    time_of_day=context.time_of_day,
-                    occupancy=context.occupancy,
-                    environment=context.environment,
+        if not _sdk_available():
+            return AgentResult(
+                session_id=context.session_id,
+                correlation_id=context.correlation_id,
+                status="rejected",
+                message=(
+                    f"DeepSeekHarnessRuntime unavailable: {DSH_MODULE} not installed "
+                    f"(pip install deepseek-harness-sdk=={DSH_SDK_VERSION})"
                 ),
             )
-            results.append(outcome)
 
-        self._sessions[context.session_id] = {"correlation_id": context.correlation_id}
+        # 真实运行（阻塞 SDK 调用放到线程池，避免阻塞事件循环）
+        return await asyncio.to_thread(self._run_sync, intent, context)  # pragma: no cover
 
-        statuses = {r["status"] for r in results}
-        if "rejected" in statuses:
-            status = "rejected"
-        elif "needs_approval" in statuses:
-            status = "needs_approval"
-        elif "failed" in statuses:
+    def _run_sync(self, intent: UserIntent, context: RuntimeContext) -> AgentResult:  # pragma: no cover
+        session_id = context.session_id or f"dsh-{context.correlation_id}"
+        with self.build_harness() as harness:
+            result = harness.run(intent.text, session_id=session_id)
+            self._sessions[context.session_id] = {"correlation_id": context.correlation_id}
+
+        finish = getattr(result, "finish_reason", None)
+        final = getattr(result, "final_response", None)
+        if finish == "error":
             status = "failed"
+        elif finish is None:
+            status = "completed" if final else "failed"
         else:
-            status = "completed" if results else "completed"
-
+            status = "completed"  # completed / max-tokens 均视为已产出
         return AgentResult(
-            session_id=context.session_id,
+            session_id=getattr(result, "session_id", session_id),
             correlation_id=context.correlation_id,
             status=status,
-            capabilities=results,
-            message=f"DeepSeekHarnessRuntime ({self._profile}) executed {len(results)} capability request(s)",
+            message=final if isinstance(final, str) else "",
+            evidence={
+                "finish_reason": finish,
+                "sdk_version": self.sdk_version,
+                "cordis": str(self._cordis),
+            },
         )
 
     async def resume(self, session_id: str, event: RuntimeEvent) -> AgentResult:
@@ -221,50 +261,5 @@ class DeepSeekHarnessRuntime:
         )
 
     async def cancel(self, session_id: str) -> None:
-        # cancellation 由 host 终止 subprocess 实现（P0-2）
+        # cancellation 由 host 回收 SDK 子进程实现（context manager 退出即回收）
         self._sessions.pop(session_id, None)
-        if self._subprocess is not None and self._subprocess.poll() is None:
-            self._subprocess.terminate()
-            try:
-                await asyncio.to_thread(self._subprocess.wait, timeout=5)
-            except subprocess.TimeoutExpired:
-                self._subprocess.kill()
-
-
-def _physical_planner(intent: UserIntent, correlation_id: str) -> list[CapabilityRequest]:
-    """dsh-physical profile 下的确定性 planner（仅 capability 动作）。"""
-    text = intent.text
-    if "开空调" in text or "打开空调" in text:
-        return [
-            CapabilityRequest(
-                capability_id="home.climate.turn_on",
-                parameters={"temperature": 26, "mode": "cool"},
-                principal=intent.principal,
-                correlation_id=correlation_id,
-                reason=text,
-            )
-        ]
-    if "关空调" in text or "关闭空调" in text:
-        return [
-            CapabilityRequest(
-                capability_id="home.climate.turn_off",
-                parameters={},
-                principal=intent.principal,
-                correlation_id=correlation_id,
-                reason=text,
-            )
-        ]
-    return []
-
-
-def _sane_env() -> dict[str, str]:
-    """隔离环境：剥离生产设备凭据（HA token / MQTT / SSH / ADB 等）。"""
-    import os
-
-    dropped_prefixes = ("HA_TOKEN", "HOMEASSISTANT", "MQTT", "SSH_", "ADB", "DEEPSEEK_API_KEY")
-    env = {
-        k: v for k, v in os.environ.items()
-        if not any(k.upper().startswith(p) for p in dropped_prefixes)
-    }
-    env["AGENT_EXECUTION_ENABLED"] = "false"  # Harness subprocess 内默认 fail-closed
-    return env

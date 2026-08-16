@@ -23,7 +23,9 @@ def test_request_binds_fields():
     assert ar.correlation_id == "c1"
     assert ar.capability_id == "home.climate.turn_on"
     assert ar.risk_tier == 2
-    assert ar.canonical_parameters_hash
+    assert ar.canonical_request_hash
+    assert ar.principal == "agent"
+    assert ar.device_id == ""
 
 
 def test_grant_and_consume_ok():
@@ -63,6 +65,32 @@ def test_correlation_mismatch_rejected():
     other = _req(cid="c2")
     with pytest.raises(ApprovalError):
         eng.consume(ar.approval_id, other, 2)
+
+
+def test_principal_mismatch_rejected():
+    """审批绑定 principal：principal 变更 → 拒绝。"""
+    eng = ApprovalEngine()
+    req = CapabilityRequest(
+        capability_id="home.lock.unlock", correlation_id="c1", principal="human"
+    )
+    ar = eng.request_approval(req, 3)
+    eng.grant(ar.approval_id)
+    other = req.model_copy(update={"principal": "agent"})
+    with pytest.raises(ApprovalError):
+        eng.consume(ar.approval_id, other, 3)
+
+
+def test_device_mismatch_rejected():
+    """审批绑定 device：device_id 变更 → 拒绝。"""
+    eng = ApprovalEngine()
+    req = CapabilityRequest(
+        capability_id="home.lock.unlock", correlation_id="c1", device_id="front.door"
+    )
+    ar = eng.request_approval(req, 3)
+    eng.grant(ar.approval_id)
+    other = req.model_copy(update={"device_id": "back.door"})
+    with pytest.raises(ApprovalError):
+        eng.consume(ar.approval_id, other, 3)
 
 
 def test_expiration_rejected():

@@ -11,6 +11,18 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class ExecutionMode(StrEnum):
+    """执行模式（M0.1 P0-1 强化）：physical vs simulation 明确化。
+
+    - SIMULATION：动作派发到 mock/in-memory 适配器，**不接触真实设备**，无需 fail-closed 写闸门。
+    - PHYSICAL：动作派发到真实适配器，必须经 fail-closed 写闸门（AGENT_EXECUTION_ENABLED=true
+      + 完整安全栈 + 审批），结果与审计明确标记 physical。
+    """
+
+    SIMULATION = "simulation"
+    PHYSICAL = "physical"
+
+
 class ExecutionState(StrEnum):
     REQUESTED = "REQUESTED"
     NEEDS_APPROVAL = "NEEDS_APPROVAL"

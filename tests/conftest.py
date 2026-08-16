@@ -14,6 +14,7 @@ from physical_agent.capability.schema import (
     ParameterSpec,
     SideEffect,
 )
+from physical_agent.execution.state_machine import ExecutionMode
 from physical_agent.policy.approval import ApprovalEngine
 from physical_agent.policy.engine import PolicyEngine
 from physical_agent.policy.kill_switch import KillSwitch
@@ -129,9 +130,30 @@ def gateway(
     audit: AuditStore,
     approval_engine: ApprovalEngine,
 ) -> CapabilityGateway:
+    # 默认 PHYSICAL（fail-closed 安全默认）
     return CapabilityGateway(
         registry=registry,
         adapters=adapters,
+        mode=ExecutionMode.PHYSICAL,
+        kill_switch=kill_switch,
+        audit=audit,
+        approval_engine=approval_engine,
+    )
+
+
+@pytest.fixture
+def simulation_gateway(
+    registry: CapabilityRegistry,
+    adapters: AdapterRegistry,
+    kill_switch: KillSwitch,
+    audit: AuditStore,
+    approval_engine: ApprovalEngine,
+) -> CapabilityGateway:
+    # SIMULATION：不接触真实设备，跳过 fail-closed 写闸门
+    return CapabilityGateway(
+        registry=registry,
+        adapters=adapters,
+        mode=ExecutionMode.SIMULATION,
         kill_switch=kill_switch,
         audit=audit,
         approval_engine=approval_engine,

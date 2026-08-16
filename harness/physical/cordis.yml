@@ -1,0 +1,51 @@
+# Physical Agent OS — Physical Runtime Cordis composition (M0.1 P0-1).
+#
+# 基于官方 deepseek-ai/deepseek-harness `examples/jsonrpc-agent/cordis.yml`（2026-08-16 核实），
+# 移除所有可执行/读写文件/子代理工具：物理 runtime 只保留 LLM + agent 核心 + 会话持久化。
+# 因此模型没有任何直接执行命令、读写文件、访问网络/SSH/ADB 的工具。
+#
+# capability.* 受控工具桥接 Physical Safety Kernel 属 M1A 落地；M0 物理组合为"仅规划/观察"。
+# 加载入口：Python SDK `DeepSeekHarness(cordis=<本文件路径>, ...)`。
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: !!js "process.env.DSH_MAX_TOKENS_AS_SUCCESS === undefined ? true : JSON.parse(process.env.DSH_MAX_TOKENS_AS_SUCCESS)"
+
+# DeepSeek 模型适配器：读取 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL（可指向本地 fake/model proxy）。
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    thinking: enabled
+    reasoningEffort: max
+
+# Agent 核心循环。物理 runtime 禁用 bash / jobs，且不挂载任何文件/编辑器/子代理工具。
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are a physical-agent controller. You may observe and propose actions, but you never actuate a device directly; every actuation must go through the Physical Safety Kernel.'
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './.sessions'
+    compression: !!js "process.env.DSH_SNAPSHOT === undefined ? 'zstd' : 'none'"
+
+- id: session-checkpoints
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+  config:
+    thresholdRatio: 0.8
+    retainRatio: 0.16
+    maxTokens: 8192
+    compactionRetries: 1

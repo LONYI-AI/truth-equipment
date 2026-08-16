@@ -93,16 +93,14 @@ class PolicyEngine:
         is_read_only = definition.is_read_only
 
         if not is_read_only:
-            if self.kill_switch.is_active:
-                reason = (
-                    "AGENT_EXECUTION_ENABLED != true (fail-closed)"
-                    if not self.kill_switch.env_explicitly_enabled
-                    else "kill switch active"
-                )
+            # 紧急停止（kill file）与组件级 kill 在所有模式生效；
+            # 环境变量 AGENT_EXECUTION_ENABLED 属 physical 写闸门（WriteGate），
+            # 由 gateway 在 PHYSICAL 模式下校验，不在此处阻断 simulation。
+            if self.kill_switch.is_kill_file_active:
                 return PolicyDecision(
                     allowed=False,
                     tier=RiskTier.SAFETY_SENSITIVE,
-                    reason=reason,
+                    reason="kill switch active",
                     requires_approval=False,
                     correlation_id=request.correlation_id,
                 )

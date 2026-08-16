@@ -36,6 +36,9 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "harness_smoke: 真实 DeepSeek Harness SDK smoke test（仅支持平台运行，需安装 .[dev,harness]）",
+]
 
 [tool.ruff]
 line-length = 120

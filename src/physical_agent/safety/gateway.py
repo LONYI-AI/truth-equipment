@@ -16,7 +16,7 @@ from physical_agent.audit.store import AuditStore
 from physical_agent.capability.registry import CapabilityRegistry, UnknownCapabilityError
 from physical_agent.capability.request import CapabilityRequest
 from physical_agent.execution.coordinator import ExecutionCoordinator
-from physical_agent.execution.state_machine import ExecutionState
+from physical_agent.execution.state_machine import ExecutionMode, ExecutionState
 from physical_agent.policy.approval import ApprovalEngine
 from physical_agent.policy.engine import PolicyEngine
 from physical_agent.policy.kill_switch import KillSwitch
@@ -26,13 +26,18 @@ from physical_agent.verification.engine import VerificationEngine
 
 
 class CapabilityGateway:
-    """Safety Kernel 编排入口（M0.1 完整版）。"""
+    """Safety Kernel 编排入口（M0.1 完整版）。
+
+    `mode`（P0-1 强化）：SIMULATION 派发到 mock 适配器且跳过 fail-closed 写闸门；
+    PHYSICAL（默认，安全）派发到真实适配器并强制 fail-closed 写闸门。
+    """
 
     def __init__(
         self,
         registry: CapabilityRegistry,
         adapters: AdapterRegistry,
         *,
+        mode: ExecutionMode = ExecutionMode.PHYSICAL,
         policy_engine: PolicyEngine | None = None,
         kill_switch: KillSwitch | None = None,
         audit: AuditStore | None = None,
@@ -42,11 +47,12 @@ class CapabilityGateway:
     ) -> None:
         self.registry = registry
         self.adapters = adapters
+        self.mode = mode
         self.kill_switch = kill_switch or KillSwitch()
         self.policy = policy_engine or PolicyEngine(registry, self.kill_switch)
         self.audit = audit or AuditStore()
         self.verifier = verifier or VerificationEngine()
-        self.coordinator = coordinator or ExecutionCoordinator()
+        self.coordinator = coordinator or ExecutionCoordinator(mode=mode)
         self.approval = approval_engine or ApprovalEngine()
         self.write_gate = WriteGate(
             kill_switch=self.kill_switch,
@@ -70,7 +76,8 @@ class CapabilityGateway:
 
         self.audit.append(
             "capability_requested", request.correlation_id,
-            {"capability_id": request.capability_id, "principal": request.principal},
+            {"capability_id": request.capability_id, "principal": request.principal,
+             "execution_mode": self.mode.value},
         )
 
         # 1. 注册 + policy
@@ -104,8 +111,8 @@ class CapabilityGateway:
                 "correlation_id": request.correlation_id,
             }
 
-        # 3. 写执行闸门（P0-3 fail-closed）：只读（side_effect none）不受限
-        if not definition.is_read_only:
+        # 3. 写执行闸门（P0-3 fail-closed）：仅 PHYSICAL 模式需要；SIMULATION 不接触真实设备
+        if not definition.is_read_only and self.mode == ExecutionMode.PHYSICAL:
             gate = self.write_gate.check(needs_approval=False)
             if not gate.allowed:
                 self.audit.append("write_blocked", request.correlation_id, {"reason": gate.reason})
@@ -141,8 +148,8 @@ class CapabilityGateway:
         self.coordinator.approve(request.correlation_id)
         self.audit.append("approved", request.correlation_id, {"approval_id": approval_id})
 
-        # 写执行闸门
-        if not definition.is_read_only:
+        # 写执行闸门（P0-3 fail-closed）：仅 PHYSICAL 模式需要
+        if not definition.is_read_only and self.mode == ExecutionMode.PHYSICAL:
             gate = self.write_gate.check(needs_approval=True)
             if not gate.allowed:
                 self.audit.append("write_blocked", request.correlation_id, {"reason": gate.reason})
@@ -164,6 +171,7 @@ class CapabilityGateway:
                 "verification_level": "V0",
                 "physical_effect": "n/a",
                 "correlation_id": request.correlation_id,
+                "execution_mode": self.mode.value,
                 "observed": state.state,
             }
 
@@ -182,7 +190,8 @@ class CapabilityGateway:
             return {"status": "failed", "reason": evidence.detail.get("error", "dispatch failed")}
 
         self.coordinator.mark_dispatched(request.correlation_id, evidence.model_dump())
-        self.audit.append("dispatched", request.correlation_id, {"capability_id": request.capability_id})
+        self.audit.append("dispatched", request.correlation_id,
+                          {"capability_id": request.capability_id, "execution_mode": self.mode.value})
 
         # 验证
         verified = await adapter.verify(evidence)
@@ -205,6 +214,7 @@ class CapabilityGateway:
             "verification_level": verification.level.value,
             "physical_effect": verification.physical_effect,
             "correlation_id": request.correlation_id,
+            "execution_mode": self.mode.value,
         }
 
     def _advance_state(self, record: Any, level: str) -> None:

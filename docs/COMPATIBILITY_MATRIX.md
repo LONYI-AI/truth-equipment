@@ -12,7 +12,7 @@
 
 | Component | Current upstream | Selected baseline | 类型 | 核实日期 |
 |---|---|---|---|---|
-| DeepSeek Harness | 0.1.0-rc.6（Developer Preview）| **pin commit SHA**（见 §0）| **Experimental prerelease** | 2026-08-16 |
+| DeepSeek Harness | 0.1.0-rc.6（Developer Preview，2026-08-13 发布）| **pin commit SHA**（见 §0）| **Experimental prerelease** | 2026-08-16 |
 | deepseek-harness-sdk | 0.1.0rc6 | **==0.1.0rc6（exact）** | **Experimental prerelease** | 2026-08-16 |
 | LangGraph | 1.2.x（1.2.5 已证实；Owner 引 1.2.11，待 pin）| **1.x LTS，M0 定 patch** | Stable | 2026-08-16 |
 | Home Assistant | 2026.8.2 | 2026.8.2 | Stable | 2026-08-16 |
@@ -30,13 +30,15 @@
 | 字段 | 值 |
 |---|---|
 | Component | DeepSeek Harness（deepseek-ai/deepseek-harness）|
-| Current upstream | **0.1.0-rc.6**（npm latest/next 与 PyPI 均仍 rc.6）|
+| Current upstream | **0.1.0-rc.6**（npm latest/next 与 PyPI 均仍 rc.6；2026-08-13 发布）|
 | Selected baseline | **pin commit SHA**（禁止 master/latest；M0-D 在 Linux 上 pin 后回填）|
 | 类型 | **Experimental prerelease**（官方 README 明确 Developer Preview，会有 breaking changes）|
-| Python SDK | `deepseek-harness-sdk==0.1.0rc6`（依赖 `deepseek-harness-runtime-bin==0.1.0rc6`）|
+| Python SDK | `deepseek-harness-sdk==0.1.0rc6`（发行包名 `deepseek-harness-sdk`，import 模块 `deepseek_harness`，依赖 `deepseek-harness-runtime-bin==0.1.0rc6`）|
+| SDK API | `from deepseek_harness import DeepSeekHarness`；`DeepSeekHarness(provider=, model=, max_tokens=, cordis=, cwd=, session_root=)` 作为 context manager（lazy 启动子进程）；`harness.run(prompt, session_id=)` → `RunResult(session_id, final_response, finish_reason, events, notifications, session_root)` |
+| Cordis composition | 真实 `.cordis.yml` 插件组合（YAML 列表：`id` + `name`(`@deepseek-ai/*`) + `config`）；需保留 `@deepseek-ai/dsh-sdk-jsonrpc-server`；`@deepseek-ai/dsh-llm-deepseek` 读取 `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`。本项目：`harness/physical/cordis.yml`（无 bash/fs/editor）、`harness/development/cordis.yml`（官方 coding 组合）|
 | **平台限制** | 运行时二进制仅发布 **Linux x64/arm64、macOS 14+ arm64**；**不支持 Windows**（本机无法运行 SDK）|
 | Known limitations | ① Windows 不支持；② 跨进程 session resume 存在 id collision 未见修复；③ 无稳定版；④ headless 无交互 TUI |
-| Tested with | **未在本机（Windows）实测**；集成代码已实现，Linux/macOS 上跑 platform-gated 测试 |
+| Tested with | **CI（GitHub Actions ubuntu-latest / Linux x64）真实 smoke test**：`pip install -e ".[dev,harness]"` → 实例化官方 `DeepSeekHarness` + 加载真实 Cordis composition → 对本地 fake/model proxy 跑一次 `run()`（`DEEPSEEK_BASE_URL` 指向本地，不消耗真实 DeepSeek API）；不支持平台（Windows）明确 skip，支持平台 SDK 缺失则 FAIL |
 | Upgrade policy | 跟踪 rc 版本，pin exact version + commit SHA；升级前过 Promotion Gate（v3.0 §36 H1-H9）|
 | Primary source | https://github.com/deepseek-ai/deepseek-harness |
 

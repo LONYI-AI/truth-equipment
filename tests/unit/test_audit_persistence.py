@@ -55,7 +55,8 @@ def test_modify_historical_event_detected(tmp_path):
         store2.load_and_verify()
 
 
-def test_truncate_detected(tmp_path):
+def test_truncate_without_checkpoint_undetectable(tmp_path):
+    """无 checkpoint 时，纯截断无法被链校验发现（链仍自洽）——故需 checkpoint 兜底。"""
     path = tmp_path / "audit.jsonl"
     store = AuditStore(path=path)
     _append_n(store, 4)
@@ -63,10 +64,42 @@ def test_truncate_detected(tmp_path):
     lines = path.read_text(encoding="utf-8").splitlines()
     path.write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")  # 截断
 
-    # 截断不会导致校验失败（只是少了后两条）——但新实例 last_hash 应与前 2 条一致
     store2 = AuditStore(path=path)
     store2.load_and_verify()
     assert len(store2.events()) == 2
+
+
+def test_tail_truncation_detected_with_checkpoint(tmp_path):
+    """有签名 checkpoint 时，尾部截断必须被检测（checkpoint 链尾与重算链尾不一致）。"""
+    path = tmp_path / "audit.jsonl"
+    cp_path = tmp_path / "audit.checkpoint"
+    store = AuditStore(path=path, signing_key=b"key", checkpoint_path=cp_path)
+    _append_n(store, 4)
+    store.checkpoint(persist=True)
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")  # 截断尾部
+
+    store2 = AuditStore(path=path, signing_key=b"key", checkpoint_path=cp_path)
+    with pytest.raises(ChainIntegrityError):
+        store2.load_and_verify()
+
+
+def test_checkpoint_tamper_detected(tmp_path):
+    """checkpoint 被篡改（链尾被改）→ 签名校验失败。"""
+    path = tmp_path / "audit.jsonl"
+    cp_path = tmp_path / "audit.checkpoint"
+    store = AuditStore(path=path, signing_key=b"key", checkpoint_path=cp_path)
+    _append_n(store, 2)
+    store.checkpoint(persist=True)
+
+    saved = json.loads(cp_path.read_text(encoding="utf-8"))
+    saved["last_hash"] = "0" * 64
+    cp_path.write_text(json.dumps(saved), encoding="utf-8")
+
+    store2 = AuditStore(path=path, signing_key=b"key", checkpoint_path=cp_path)
+    with pytest.raises(ChainIntegrityError):
+        store2.load_and_verify()
 
 
 def test_reorder_detected(tmp_path):

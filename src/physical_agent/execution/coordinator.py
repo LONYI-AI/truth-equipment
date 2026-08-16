@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from physical_agent.capability.request import CapabilityRequest
-from physical_agent.execution.state_machine import ExecutionState, ExecutionStateMachine
+from physical_agent.execution.state_machine import ExecutionMode, ExecutionState, ExecutionStateMachine
 from physical_agent.policy.engine import PolicyDecision, PolicyDeniedError
 
 
@@ -26,6 +26,7 @@ class ExecutionRecord:
     capability_id: str
     parameters: dict[str, Any]
     machine: ExecutionStateMachine
+    mode: ExecutionMode = ExecutionMode.PHYSICAL
     decision: PolicyDecision | None = None
     adapter_result: Any = None
     started_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -38,7 +39,8 @@ class ExecutionRecord:
 class ExecutionCoordinator:
     """协调执行：确保顺序经 Policy → dispatch → 状态推进，并保证 correlation 唯一。"""
 
-    def __init__(self) -> None:
+    def __init__(self, mode: ExecutionMode = ExecutionMode.PHYSICAL) -> None:
+        self.mode = mode
         self._records: dict[str, ExecutionRecord] = {}
 
     def _ensure_unique(self, correlation_id: str) -> None:
@@ -65,6 +67,7 @@ class ExecutionCoordinator:
             capability_id=request.capability_id,
             parameters=request.parameters,
             machine=machine,
+            mode=self.mode,
             decision=decision,
         )
         self._records[request.correlation_id] = record

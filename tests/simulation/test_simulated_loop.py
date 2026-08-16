@@ -7,14 +7,14 @@ from physical_agent.runtime.base import RuntimeContext, UserIntent
 from physical_agent.runtime.mock import MockRuntime
 
 
-async def test_full_loop_turn_on_ac_v2(gateway, mock_device, audit):
+async def test_full_loop_turn_on_ac_v2(simulation_gateway, mock_device, audit):
     """完整链：request → policy → execute → adapter → mock device → verify V2 → audit。"""
     req = CapabilityRequest(
         capability_id="home.climate.turn_on",
         parameters={"temperature": 26, "mode": "cool"},
         correlation_id="loop1",
     )
-    outcome = await gateway.execute(req)
+    outcome = await simulation_gateway.execute(req)
     assert outcome["status"] == "completed"
     assert outcome["verification_level"] == "V2"
     # 模拟设备已开启
@@ -29,7 +29,7 @@ async def test_full_loop_turn_on_ac_v2(gateway, mock_device, audit):
     assert "verification" in types
 
 
-async def test_full_loop_v4_confirmation(gateway, mock_device):
+async def test_full_loop_v4_confirmation(simulation_gateway, mock_device):
     """V4 证据时，状态机推进到 PHYSICAL_EFFECT。"""
     mock_device.set_fault(evidence_level="V4")
     req = CapabilityRequest(
@@ -37,14 +37,14 @@ async def test_full_loop_v4_confirmation(gateway, mock_device):
         parameters={"temperature": 26, "mode": "cool"},
         correlation_id="loop2",
     )
-    outcome = await gateway.execute(req)
+    outcome = await simulation_gateway.execute(req)
     assert outcome["status"] == "completed"
     assert outcome["verification_level"] == "V4"
     assert outcome["physical_effect"] == "confirmed"
     assert outcome["state"] == "PHYSICAL_EFFECT"
 
 
-async def test_actuation_failure(gateway, mock_device, audit):
+async def test_actuation_failure(simulation_gateway, mock_device, audit):
     """执行器故障 → FAILED，审计记录 dispatch_failed。"""
     mock_device.set_fault(fail_actuation=True)
     req = CapabilityRequest(
@@ -52,12 +52,12 @@ async def test_actuation_failure(gateway, mock_device, audit):
         parameters={"temperature": 26},
         correlation_id="loop3",
     )
-    outcome = await gateway.execute(req)
+    outcome = await simulation_gateway.execute(req)
     assert outcome["status"] == "failed"
     assert any(e.event_type == "dispatch_failed" for e in audit.events())
 
 
-async def test_ir_readback_v2_is_not_physical_confirmation(gateway, mock_device):
+async def test_ir_readback_v2_is_not_physical_confirmation(simulation_gateway, mock_device):
     """V2（IR 回读）不能误判为物理效果已确认。"""
     mock_device.set_fault(evidence_level="V2")  # 仅 V2
     req = CapabilityRequest(
@@ -65,15 +65,15 @@ async def test_ir_readback_v2_is_not_physical_confirmation(gateway, mock_device)
         parameters={"temperature": 26},
         correlation_id="loop4",
     )
-    outcome = await gateway.execute(req)
+    outcome = await simulation_gateway.execute(req)
     assert outcome["verification_level"] == "V2"
     assert outcome["state"] == "ACTUATION_OBSERVED"  # 停在 V2，不宣称物理效果
     assert outcome["physical_effect"] == "pending"
 
 
-async def test_mock_runtime_end_to_end(gateway, mock_device, audit):
+async def test_mock_runtime_end_to_end(simulation_gateway, mock_device, audit):
     """MockRuntime 端到端：自然语言 → 物理设备。"""
-    rt = MockRuntime(gateway)
+    rt = MockRuntime(simulation_gateway)
     result = await rt.run(
         UserIntent(text="打开空调", session_id="s1"),
         RuntimeContext(correlation_id="e2e1", session_id="s1"),
@@ -83,11 +83,11 @@ async def test_mock_runtime_end_to_end(gateway, mock_device, audit):
     audit.verify_chain()
 
 
-async def test_duplicate_commands_rate_limited(gateway):
+async def test_duplicate_commands_rate_limited(simulation_gateway):
     """重复命令（快速连续）→ 速率限制。"""
     outcomes = []
     for i in range(5):
-        o = await gateway.execute(
+        o = await simulation_gateway.execute(
             CapabilityRequest(capability_id="home.climate.turn_off", correlation_id=f"d{i}")
         )
         outcomes.append(o)

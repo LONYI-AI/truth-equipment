@@ -39,6 +39,11 @@ class KillSwitch:
             return True
         return self._kill_file.exists()
 
+    @property
+    def is_kill_file_active(self) -> bool:
+        """仅凭 kill file 判断（不依赖环境变量；供 policy 在 simulation/physical 统一使用）。"""
+        return self._kill_file.exists()
+
     def activate(self) -> None:
         self._kill_file.touch()
 

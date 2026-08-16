@@ -27,9 +27,9 @@ v3.0 规格（Physical Agent OS）为权威基线（见 [`docs/SPEC_V3.0.md`](do
 | 关键交付 | 状态 |
 |---|---|
 | Physical Safety Kernel（Capability Gateway / Policy / Approval / Execution / Verification / Audit / KillSwitch）| ✅ `src/physical_agent/` |
-| DeepSeek Harness SDK 集成（pin 0.1.0rc6 + 双 profile）| ✅ `src/physical_agent/runtime/deepseek_harness.py` + `harness/` |
+| DeepSeek Harness 真实 SDK 集成（官方 `deepseek_harness.DeepSeekHarness` + Cordis composition + CI smoke test）| ✅ `src/physical_agent/runtime/deepseek_harness.py` + `harness/*/cordis.yml` + `tests/runtime-conformance/test_deepseek_harness_smoke.py` |
 | LangGraph / Mock runtime | ✅ `src/physical_agent/runtime/` |
-| 测试套件（unit/security/conformance/simulation）| ✅ 126 passed，coverage 88% |
+| 测试套件（unit/security/conformance/simulation + DeepSeek smoke）| ✅ 136 passed + 1 DeepSeek smoke（Linux 真实运行 / Windows skip），coverage 91%（门禁 ≥75%）|
 | Evidence pipeline + CI + pre-commit + consistency | ✅ `scripts/` + `.github/` |
 | M0.1 报告 | ✅ [`docs/audits/2026-08-16-m0.1-hardening.md`](docs/audits/2026-08-16-m0.1-hardening.md) |
 
@@ -60,9 +60,10 @@ v3.0 规格（Physical Agent OS）为权威基线（见 [`docs/SPEC_V3.0.md`](do
 M0.1 完成后可运行测试与证据管道：
 
 ```bash
-pip install -e ".[dev]"       # 安装包 + 开发依赖
-pytest -q                     # 运行全部测试
-python scripts/verify_m0.py   # 生成 evidence/
+pip install -e ".[dev]"          # 安装包 + 开发依赖
+pip install -e ".[dev,harness]"  # + DeepSeek Harness SDK（仅 Linux x64/arm64、macOS arm64）
+pytest -q                        # 运行全部测试
+python scripts/verify_m0.py      # 生成 evidence/（mandatory failure 时退出非零）
 python scripts/check_repo_consistency.py
 ```
 

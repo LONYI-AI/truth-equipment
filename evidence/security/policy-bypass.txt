@@ -1,4 +1,2 @@
 ...................                                                      [100%]
-19 passed in 0.55s
-[safe-delete][SAFE_DELETE_FAIL_CLOSED] {"target": "\\\\?\\D:\\NoC_Apps\\UserData\\Local\\Temp\\pytest-of-33940\\garbage-be4a3bd6-ee7e-45ba-b41c-4ea6e3f05e0d", "reason": "windows-sandbox-recycle-bin-unavailable"}
-[safe-delete][SAFE_DELETE_FAIL_CLOSED] {"target": "\\\\?\\D:\\NoC_Apps\\UserData\\Local\\Temp\\pytest-of-33940\\garbage-c98e8094-b4c9-4295-a33c-84768292faa4", "reason": "windows-sandbox-recycle-bin-unavailable"}
+19 passed in 0.21s

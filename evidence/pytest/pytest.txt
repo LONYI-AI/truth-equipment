@@ -1,5 +1,3 @@
-........................................................................ [ 57%]
-......................................................                   [100%]
-126 passed in 1.63s
-[safe-delete][SAFE_DELETE_FAIL_CLOSED] {"target": "\\\\?\\D:\\NoC_Apps\\UserData\\Local\\Temp\\pytest-of-33940\\garbage-675f7262-ed63-4c6e-a278-3f518f7d1525", "reason": "windows-sandbox-recycle-bin-unavailable"}
-[safe-delete][SAFE_DELETE_FAIL_CLOSED] {"target": "\\\\?\\D:\\NoC_Apps\\UserData\\Local\\Temp\\pytest-of-33940\\garbage-39a290bf-46dc-474d-a7aa-dfbacc26a7f8", "reason": "windows-sandbox-recycle-bin-unavailable"}
+........................................................................ [ 52%]
+................................................................         [100%]
+136 passed, 1 deselected in 1.09s
