@@ -9,6 +9,8 @@ description = "Physical Agent OS — Safety Kernel + Runtime (M0 Foundation)"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
+    # M1A-W1：真实 LangGraph StateGraph（官方文档验证 Python 3.12 兼容，精确 pin 经 W1 门禁的版本）
+    "langgraph==1.2.11",
 ]
 
 [project.optional-dependencies]
