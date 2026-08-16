@@ -2,6 +2,10 @@
 
 不 mock StateGraph；注入 deterministic handler 验证真实编译与路由。
 零物理执行：graph 骨架模块不引用 adapter / safety / execution。
+
+M1A-W2 REV2 整改：Reason → Graph 边界改用 typed contract `ReasoningRoute`
+（PLAN / DIRECT / NOOP），本文件中的 direct-path 测试改用 `route=DIRECT` 表达，
+NOOP 为安全终态（新增断言）。
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from physical_agent.runtime.graph import (
     route_after_reason,
     route_after_verify,
 )
+from physical_agent.runtime.planning import ReasoningRoute
 from physical_agent.runtime.state import WorldState
 from physical_agent.verification.evidence import VerificationEvidence
 
@@ -106,8 +111,12 @@ def test_route_after_verify():
 
 
 def test_route_after_reason():
-    assert route_after_reason({"has_plan": True}) == "plan"
-    assert route_after_reason({"has_plan": False}) == "policy_gate"
+    # typed contract：PLAN / DIRECT / NOOP 三态无歧义
+    assert route_after_reason({"route": ReasoningRoute.PLAN}) == "plan"
+    assert route_after_reason({"route": ReasoningRoute.DIRECT}) == "policy_gate"
+    assert route_after_reason({"route": ReasoningRoute.NOOP}) == "noop"
+    # 缺失/未知 → noop（fail-closed 安全终态）
+    assert route_after_reason({}) == "noop"
 
 
 # ---- 状态传播（成功路径，sync）----
@@ -125,7 +134,7 @@ def test_state_propagates_through_real_graph():
 
     def reason(state):
         visited.append("reason")
-        return {"has_plan": True}
+        return {"route": ReasoningRoute.PLAN}
 
     def plan(state):
         visited.append("plan")
@@ -174,7 +183,7 @@ def test_real_verification_evidence_used():
     """graph 状态中的 verification 是真实 M0 VerificationEvidence（非 ad-hoc dict）。"""
     handlers = _make_handlers(
         [],
-        reason=lambda s: {"has_plan": False},
+        reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_verdict": "approved"},
         verify=lambda s: {"verification": _sim_verification("confirmed")},
     )
@@ -191,7 +200,7 @@ def test_conditional_success_route():
     visited: list[str] = []
     handlers = _make_handlers(
         visited,
-        reason=lambda s: {"has_plan": False},
+        reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_verdict": "approved"},
         verify=lambda s: {"verification": _sim_verification("confirmed")},
     )
@@ -213,7 +222,7 @@ def test_conditional_retry_route():
 
     handlers = _make_handlers(
         visited,
-        reason=lambda s: {"has_plan": False},
+        reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_verdict": "approved"},
         verify=verify,
     )
@@ -227,7 +236,7 @@ def test_conditional_compensate_route():
     visited: list[str] = []
     handlers = _make_handlers(
         visited,
-        reason=lambda s: {"has_plan": False},
+        reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_verdict": "approved"},
         verify=lambda s: {"verification": _sim_verification("failed"), "retry_count": 2},
     )
@@ -241,7 +250,7 @@ def test_policy_reject_route():
     visited: list[str] = []
     handlers = _make_handlers(
         visited,
-        reason=lambda s: {"has_plan": False},
+        reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {"policy_verdict": "rejected"},
     )
     graph = build_graph(handlers)
@@ -250,12 +259,31 @@ def test_policy_reject_route():
     assert "execute" not in visited
 
 
+def test_noop_safe_terminal_route():
+    """NOOP 路由：真实 graph 运行中 non-actionable 直达 END，不触达任何下游节点。"""
+
+    def reason(state):
+        visited.append("reason")
+        return {"route": ReasoningRoute.NOOP}
+
+    visited: list[str] = []
+    handlers = _make_handlers(
+        visited,
+        reason=reason,
+    )
+    graph = build_graph(handlers)
+    result = graph.invoke({"messages": []})
+    # 只有 perceive/recall/reason 被访问；plan/policy/execute/verify 等均未访问
+    assert visited == ["perceive", "recall", "reason"]
+    assert result["route"] is ReasoningRoute.NOOP
+
+
 def test_approval_boundary_route():
     """审批挂起边界：needs_approval → human_review，且 approval 绑定元数据在边界存活。"""
     visited: list[str] = []
     handlers = _make_handlers(
         visited,
-        reason=lambda s: {"has_plan": False},
+        reason=lambda s: {"route": ReasoningRoute.DIRECT},
         policy_gate=lambda s: {
             "policy_verdict": "needs_approval",
             "needs_human_review": True,
@@ -298,7 +326,7 @@ def test_messages_accumulate_via_add_messages_in_graph():
 
     handlers = _make_handlers(
         [],
-        perceive=lambda s: {"messages": [HumanMessage(content="p", id="m1")], "has_plan": False},
+        perceive=lambda s: {"messages": [HumanMessage(content="p", id="m1")], "route": ReasoningRoute.DIRECT},
         recall=lambda s: {"messages": [HumanMessage(content="r", id="m2")]},
         policy_gate=lambda s: {"policy_verdict": "approved"},
         verify=lambda s: {"verification": _sim_verification("confirmed")},
@@ -316,7 +344,7 @@ async def test_real_async_node():
 
     async def perceive(state):
         visited.append("perceive")
-        return {"session_id": "s1", "has_plan": False}
+        return {"session_id": "s1", "route": ReasoningRoute.DIRECT}
 
     async def policy_gate(state):
         visited.append("policy_gate")

@@ -1,21 +1,32 @@
-"""M1A-W1 REV2 状态模型：AgentState（LangGraph 状态 schema）+ WorldState。
+"""M1A-W2 REV2 状态模型：AgentState（LangGraph 状态 schema）+ WorldState。
 
-设计约束（W0.1 语义 + M1A-W1 授权 + W1 REV2 整改）：
+设计约束（W0.1 语义 + M1A-W1 授权 + W2 REV2 整改）：
 - 复用 M0 `VerificationEvidence` 作为验证状态（不另造第二个 verification schema）。
 - `messages` 用 LangGraph 官方 `add_messages` reducer（按消息 ID 去重/更新，非 list 拼接）。
-- WorldState 的 `source` / `provenance` 用显式 Literal 类型，拒绝任意字符串（安全相关）。
+- WorldState 的 `source` / `provenance` 用显式 Literal 类型并校验组合一致性。
+- `observed_at` 用 timezone-aware datetime（拒绝空值/naive/malformed 时间）。
+- 复用 M0 `UserIntent`（intent）、M0 `CapabilityRequest`（经 Plan.steps）。
+- Reason → Graph 路由用 typed contract `ReasoningRoute`（非单一 bool）。
 - 审批挂起边界保留 `approval_id` / `canonical_request_hash`（兼容 M0 `ApprovalRequest`）。
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from operator import add
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from physical_agent.runtime.base import UserIntent
+from physical_agent.runtime.planning import (
+    MemoryContext,
+    Plan,
+    ReasoningDecision,
+    ReasoningRoute,
+)
 from physical_agent.verification.evidence import VerificationEvidence
 
 # 有限集合类型：source / provenance 是安全相关字段（路由/验证需区分模拟 vs 物理）。
@@ -29,7 +40,7 @@ class WorldState(BaseModel):
     - `source`：状态来源（simulation / physical / memory）。
     - `provenance`：SIMULATED VERIFICATION EVIDENCE 语义；M1A 恒为 simulated，
       真实物理感知（M1B+）才会出现 physical。
-    - `observed_at`：感知时间戳（ISO-8601 UTC），表达状态新旧（freshness）。
+    - `observed_at`：timezone-aware datetime，表达状态新旧（freshness）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -42,9 +53,9 @@ class WorldState(BaseModel):
         default_factory=dict,
         description="环境状态（温度/占用/时段等）",
     )
-    observed_at: str = Field(
-        default="",
-        description="感知时间戳（ISO-8601 UTC），用于 freshness 判断",
+    observed_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="感知时间戳（timezone-aware，用于 freshness 判断）",
     )
     source: Source = Field(
         default="simulation",
@@ -55,21 +66,43 @@ class WorldState(BaseModel):
         description="证据来源标记：M1A 为 simulated；physical 仅出现在真实感知（M1B+）",
     )
 
+    @field_validator("observed_at")
+    @classmethod
+    def _require_tz_aware(cls, v: datetime) -> datetime:
+        if v.tzinfo is None or v.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware (reject naive datetime)")
+        return v
+
+    @model_validator(mode="after")
+    def _check_source_provenance(self) -> WorldState:
+        if self.source == "simulation" and self.provenance != "simulated":
+            raise ValueError("simulation source requires 'simulated' provenance")
+        if self.source == "physical" and self.provenance != "physical":
+            raise ValueError("physical source requires 'physical' provenance")
+        # memory 来源可承载 simulated 或 physical，不锁死未来 M1B+ 模型
+        return self
+
 
 class AgentState(TypedDict, total=False):
-    """LangGraph 状态 schema（M1A-W1 REV2，架构级概念，见 ARCHITECTURE.md §2.1）。
+    """LangGraph 状态 schema（M1A-W2 REV2，架构级概念，见 ARCHITECTURE.md §2.1）。
 
     这是 graph 内部状态，不是 M0 `AgentResult` 的重复定义；M0 `AgentRuntime`
     协议（run/resume/cancel）保持不变。除架构字段外，附带**已论证的路由信号**
-    （`has_plan`、`policy_verdict`）与审批挂起元数据，均非验收专用字段。
+    （`route`、`policy_verdict`）与审批挂起元数据，均非验收专用字段。
     """
 
     # 会话消息（官方 add_messages reducer：按 ID 去重/更新，非 list 拼接）
     messages: Annotated[list[AnyMessage], add_messages]
+    # 用户意图（复用 M0 UserIntent）
+    intent: UserIntent | None
     # 当前感知的世界状态
     world_state: WorldState | None
-    # 当前计划（reason/plan 节点写入的结构化计划）
-    current_plan: dict[str, Any] | None
+    # 记忆检索上下文（Recall 输出）
+    memory_context: MemoryContext | None
+    # 推理决策（Reason 输出）
+    reasoning: ReasoningDecision | None
+    # 当前计划（Plan 输出，复用 M0 CapabilityRequest）
+    current_plan: Plan | None
     # 执行历史（accumulate：append 语义）
     execution_history: Annotated[list[dict[str, Any]], add]
     # 验证结果：复用 M0 冻结的 VerificationEvidence（含 level / evidence / physical_effect）
@@ -85,7 +118,8 @@ class AgentState(TypedDict, total=False):
     approval_id: str | None
     canonical_request_hash: str | None
     # —— 以下为 graph 路由信号（生产路由需要，非验收专用）——
-    # reason 是否产出了需要进一步结构化的计划（True→plan 节点；False→直接进 policy_gate）
-    has_plan: bool
+    # Reason → Graph 路由状态（typed contract）：
+    #   PLAN → plan 节点；DIRECT → policy_gate；NOOP/缺失 → 安全终态（END）
+    route: ReasoningRoute
     # policy_gate 判定结果：approved / rejected / needs_approval
     policy_verdict: str

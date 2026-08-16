@@ -1,4 +1,4 @@
-"""M1A-W1 REV2：真实 LangGraph StateGraph 拓扑构建器。
+"""M1A-W1 REV2（经 M1A-W2 REV2 整改）：真实 LangGraph StateGraph 拓扑构建器。
 
 W1 只建立**真实 LangGraph 拓扑骨架**，不实现业务逻辑：
 - 生产代码不含 perceive/recall/reason/... 的"假成功"实现；
@@ -6,6 +6,10 @@ W1 只建立**真实 LangGraph 拓扑骨架**，不实现业务逻辑：
 
 零物理执行：本模块不 import 任何 adapter / safety / execution 模块，
 graph 骨架本身不做任何设备 actuation，不引用 CapabilityGateway 做真实执行。
+
+W2 REV2 整改（P0）：Reason → Graph 边界改用 typed contract `ReasoningRoute`
+（PLAN / DIRECT / NOOP 三态），non-actionable（NOOP）安全终态直达 END，
+绝不进入 policy_gate / execute / verify。
 
 审批挂起/恢复：W1 只定义 `human_review` 边界节点 + 状态契约（session_id /
 correlation_id / approval_id / canonical_request_hash），不实现 checkpoint/resume
@@ -20,6 +24,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from physical_agent.runtime.planning import ReasoningRoute
 from physical_agent.runtime.state import AgentState
 
 # 节点 handler 契约：同步或异步皆可（官方 LangGraph 支持 sync/async 节点）。
@@ -66,8 +71,19 @@ NODE_NAMES: tuple[str, ...] = (
 
 
 def route_after_reason(state: AgentState) -> str:
-    """直接决策边界：reason 产出了需进一步结构化的计划 → plan；否则 → policy_gate。"""
-    return "plan" if state.get("has_plan") else "policy_gate"
+    """Reason → Graph 边界（typed contract，非单一 bool）。
+
+    - PLAN   → "plan"（planned actionable：先结构化为 Plan）
+    - DIRECT → "policy_gate"（direct actionable：显式保留 W1 direct path）
+    - NOOP   → "noop"（non-actionable / no-op：安全终态，映射到 END）
+    - 缺失/未知 → "noop"（fail-closed：绝不进入 policy/execute/verify）
+    """
+    route = state.get("route")
+    if route == ReasoningRoute.PLAN:
+        return "plan"
+    if route == ReasoningRoute.DIRECT:
+        return "policy_gate"
+    return "noop"
 
 
 def route_after_policy(state: AgentState) -> str:
@@ -103,10 +119,11 @@ def route_after_verify(state: AgentState) -> str:
 def build_graph(handlers: NodeHandlers) -> Any:
     """用真实 langgraph StateGraph 构建 M1A 拓扑，返回编译后的图。
 
-    拓扑（对齐 ARCHITECTURE.md §2.1 控制流）：
+    拓扑（对齐 ARCHITECTURE.md §2.1 控制流，含 W2 REV2 三态路由）：
         START → perceive → recall → reason
-          reason ─(has_plan?)─┬→ plan ─→ policy_gate
-                              └→ policy_gate（直接决策）
+          reason ─(route)─┬→ plan ─→ policy_gate          (PLAN)
+                          ├→ policy_gate                    (DIRECT)
+                          └→ END                             (NOOP，安全终态)
           policy_gate ─┬→ approved  → execute → verify
                        ├→ rejected  → escalate → END
                        └→ needs_approval → human_review → END（挂起边界）
@@ -127,11 +144,11 @@ def build_graph(handlers: NodeHandlers) -> Any:
     builder.add_edge("perceive", "recall")
     builder.add_edge("recall", "reason")
 
-    # 直接决策边界
+    # Reason → Graph 边界（typed contract：PLAN / DIRECT / NOOP）
     builder.add_conditional_edges(
         "reason",
         route_after_reason,
-        {"plan": "plan", "policy_gate": "policy_gate"},
+        {"plan": "plan", "policy_gate": "policy_gate", "noop": END},
     )
     builder.add_edge("plan", "policy_gate")
 

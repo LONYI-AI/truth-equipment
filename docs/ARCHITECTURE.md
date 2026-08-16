@@ -124,7 +124,7 @@ class AgentState(TypedDict):
 |---|---|---|---|
 | `perceive` | 从 HA/Memory 获取当前环境状态 | 用户指令 | 更新后的 world_state |
 | `recall` | 从 Memory 检索相关历史和偏好 | world_state + intent | 上下文增强的 messages |
-| `reason` | LLM 推理：理解意图、生成计划 | messages | plan 或 direct_tool_call |
+| `reason` | LLM 推理：理解意图、生成计划 | messages | `ReasoningRoute`：`plan` / `direct` / `noop` |
 | `plan` | 将 LLM 输出结构化为可执行计划 | reason 输出 | 结构化 Plan |
 | `policy_gate` | 风险分级、参数校验、权限检查 | plan + tool_calls | approved/rejected/escalate |
 | `execute` | 经 Tool Gateway 执行工具调用 | approved tools | execution_result |
@@ -135,9 +135,10 @@ class AgentState(TypedDict):
 **边（控制流）**：
 
 ```
-START → perceive → recall → reason → {has_plan?}
-                                  ├─ yes → plan → policy_gate
-                                  └─ no → policy_gate (direct)
+START → perceive → recall → reason → {route: ReasoningRoute}
+                                  ├─ PLAN   → plan → policy_gate
+                                  ├─ DIRECT → policy_gate (direct，保留 W1 direct path)
+                                  └─ NOOP   → END（non-actionable 安全终态）
                                         │
                                         ├─ approved → execute → verify
                                         │                             │
@@ -152,6 +153,16 @@ START → perceive → recall → reason → {has_plan?}
                                                             ├─ yes → execute
                                                             └─ no → END
 ```
+
+> **Reason → Graph 边界契约（M1A-W2 REV3）**：路由用 typed contract
+> `ReasoningRoute`（`PLAN` / `DIRECT` / `NOOP`）三态，不再用单一 `bool` 混同
+> 「是否 actionable」与「是否需要 plan」。`NOOP`（non-actionable / no-op）在
+> Reason 边界即安全终态（END），绝不进入 policy_gate / execute / verify。
+> **stale-plan lifecycle invariant**：Reason 每轮无条件 invalidate 任何 prior
+> `current_plan`（`PLAN`/`DIRECT`/`NOOP` 均输出 `current_plan=None`）；只有 `plan`
+> 节点是 `current-plan` 的唯一生产者。DIRECT 到 policy boundary 的 canonical
+> current-action 来源是 `reasoning`（本轮 `ReasoningDecision`），policy 不得把遗留
+> `current_plan` 当成 DIRECT 本轮请求。详见 ADR-0010。
 
 ### 2.2 Capability Gateway（`src/physical_agent/policy/`）
 
