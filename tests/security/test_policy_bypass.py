@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from physical_agent.capability.request import CapabilityRequest
+from physical_agent.policy.risk import RiskContext
 from physical_agent.safety.gateway import CapabilityGateway
 
 
@@ -129,3 +130,52 @@ async def test_adapter_cannot_be_reached_directly_by_llm(registry, mock_adapter,
     # 审计链完整
     assert len(audit.events()) >= 4
     audit.verify_chain()
+
+
+async def test_approval_cannot_bypass_rate_limit_changed_after_grant(gateway, mock_adapter):
+    """A policy denial after approval has priority and leaves the grant unconsumed."""
+    req = CapabilityRequest(
+        capability_id="home.lock.unlock",
+        device_id="front-door",
+        principal="human",
+        correlation_id="approval-rate-limit",
+    )
+    pending = await gateway.execute(req)
+    approval_id = pending["approval_id"]
+    gateway.approve(approval_id)
+
+    # The initial request consumed one rate slot; exhaust the two remaining
+    # slots before re-evaluation in execute_approved().
+    gateway.policy.evaluate(req)
+    gateway.policy.evaluate(req)
+    outcome = await gateway.execute_approved(req, approval_id)
+
+    assert outcome == {"status": "rejected", "reason": "rate limit exceeded"}
+    assert mock_adapter.execute_calls == 0
+    assert not gateway.approval._grants[approval_id].is_consumed
+    event = [e for e in gateway.audit.events() if e.event_type == "policy_rejected_after_approval"][-1]
+    assert event.data == {
+        "approval_id": approval_id,
+        "capability_id": "home.lock.unlock",
+        "principal": "human",
+        "device_id": "front-door",
+        "policy_reason": "rate limit exceeded",
+    }
+
+
+async def test_approval_cannot_bypass_changed_safety_context(gateway, mock_adapter):
+    """A changed context is re-evaluated and blocks dispatch after approval."""
+    req = CapabilityRequest(capability_id="home.lock.unlock", correlation_id="approval-context")
+    pending = await gateway.execute(req)
+    approval_id = pending["approval_id"]
+    gateway.approve(approval_id)
+
+    outcome = await gateway.execute_approved(
+        req,
+        approval_id,
+        context=RiskContext(historical_state="rapid_cycling"),
+    )
+
+    assert outcome == {"status": "rejected", "reason": "rapid cycling detected"}
+    assert mock_adapter.execute_calls == 0
+    assert not gateway.approval._grants[approval_id].is_consumed

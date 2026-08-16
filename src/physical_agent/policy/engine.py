@@ -113,6 +113,17 @@ class PolicyEngine:
                     correlation_id=request.correlation_id,
                 )
 
+            # A compressor protection signal is a present safety constraint,
+            # not merely a reason to request another approval.
+            if context.historical_state == "rapid_cycling":
+                return PolicyDecision(
+                    allowed=False,
+                    tier=RiskTier.SAFETY_SENSITIVE,
+                    reason="rapid cycling detected",
+                    requires_approval=False,
+                    correlation_id=request.correlation_id,
+                )
+
         # 2. schema / 参数边界（fail-closed：未知参数拒绝）
         errors = definition.validate_parameters(request.parameters)
         if errors:

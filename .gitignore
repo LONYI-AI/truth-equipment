@@ -39,6 +39,7 @@ venv/
 htmlcov/
 .coverage
 .coverage.*
+evidence/
 build/
 dist/
 *.zip

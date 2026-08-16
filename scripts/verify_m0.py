@@ -1,4 +1,4 @@
-"""M0.1 Evidence Pipeline（P0-10 + 强化）。
+"""M0 Final evidence pipeline.
 
 生成 evidence/ 下所有证据文件，全部来自真实命令输出，
 不允许 Agent 手写 "PASS"。
@@ -13,8 +13,12 @@ secret 命中、工具缺失等）都使本脚本以非零退出码结束（`sys
 
 from __future__ import annotations
 
+import importlib.metadata
+import json
+import platform
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,7 +31,7 @@ PYTHON = sys.executable
 COVERAGE_THRESHOLD = 75.0
 
 
-class StepFailure(Exception):
+class StepError(Exception):
     """一步 mandatory 校验失败。"""
 
 
@@ -42,9 +46,9 @@ def write(path: Path, content: str) -> None:
 
 
 def require_ok(r: subprocess.CompletedProcess, label: str) -> None:
-    """返回码非零 → StepFailure（mandatory failure）。"""
+    """返回码非零 → StepError（mandatory failure）。"""
     if r.returncode != 0:
-        raise StepFailure(f"{label} exited {r.returncode}\n{r.stdout}\n{r.stderr}")
+        raise StepError(f"{label} exited {r.returncode}\n{r.stdout}\n{r.stderr}")
 
 
 def _check_coverage(report: str) -> None:
@@ -55,11 +59,11 @@ def _check_coverage(report: str) -> None:
             try:
                 value = float(pct)
             except ValueError as exc:
-                raise StepFailure(f"could not parse coverage TOTAL line: {line!r}") from exc
+                raise StepError(f"could not parse coverage TOTAL line: {line!r}") from exc
             if value < COVERAGE_THRESHOLD:
-                raise StepFailure(f"coverage {value}% below threshold {COVERAGE_THRESHOLD}%")
+                raise StepError(f"coverage {value}% below threshold {COVERAGE_THRESHOLD}%")
             return
-    raise StepFailure("coverage TOTAL line not found")
+    raise StepError("coverage TOTAL line not found")
 
 
 def step_pytest() -> None:
@@ -68,14 +72,17 @@ def step_pytest() -> None:
     require_ok(r, "pytest")
 
     # 用 coverage 模块（避免 pytest-cov 的 .coverage 文件被环境误删）
-    cov_file = str(EVIDENCE / "pytest" / ".coverage")
-    rc = run([PYTHON, "-m", "coverage", "run", f"--data-file={cov_file}",
-              "--source=physical_agent", "-m", "pytest", "-q", "-m", "not harness_smoke"])
-    require_ok(rc, "coverage run")
-    c = run([PYTHON, "-m", "coverage", "report", f"--data-file={cov_file}"])
-    write(EVIDENCE / "pytest" / "coverage.txt", c.stdout + c.stderr)
-    require_ok(c, "coverage report")
-    _check_coverage(c.stdout)
+    cov_file = ROOT / ".coverage.m0"
+    try:
+        rc = run([PYTHON, "-m", "coverage", "run", f"--data-file={cov_file}",
+                  "--source=physical_agent", "-m", "pytest", "-q", "-m", "not harness_smoke"])
+        require_ok(rc, "coverage run")
+        c = run([PYTHON, "-m", "coverage", "report", f"--data-file={cov_file}"])
+        write(EVIDENCE / "pytest" / "coverage.txt", c.stdout + c.stderr)
+        require_ok(c, "coverage report")
+        _check_coverage(c.stdout)
+    finally:
+        cov_file.unlink(missing_ok=True)
 
 
 def step_lint() -> None:
@@ -113,7 +120,7 @@ def step_secret_scan() -> None:
             hits.append(f"[pattern {pattern}]\n{r.stdout}")
     if hits:
         write(EVIDENCE / "security" / "secret-scan.txt", "SECRETS FOUND:\n\n" + "\n\n".join(hits))
-        raise StepFailure("secrets found in repository (see evidence/security/secret-scan.txt)")
+        raise StepError("secrets found in repository (see evidence/security/secret-scan.txt)")
     write(EVIDENCE / "security" / "secret-scan.txt", "No secrets found.\n")
 
 
@@ -123,17 +130,39 @@ def step_policy_bypass() -> None:
     require_ok(r, "policy bypass tests")
 
 
+def step_physical_boundary() -> None:
+    r = run([
+        PYTHON,
+        "-m",
+        "pytest",
+        "tests/unit/test_execution_mode.py",
+        "tests/unit/test_audit_persistence.py",
+        "-q",
+    ])
+    write(EVIDENCE / "security" / "physical-boundary.txt", r.stdout + r.stderr)
+    require_ok(r, "physical execution boundary tests")
+
+
 def step_conformance() -> None:
     r = run([PYTHON, "-m", "pytest", "tests/runtime-conformance/", "-q", "-m", "not harness_smoke"])
-    write(EVIDENCE / "runtime-conformance" / "report.txt", r.stdout + r.stderr)
+    write(EVIDENCE / "runtime-conformance" / "conformance.txt", r.stdout + r.stderr)
     require_ok(r, "runtime conformance")
 
 
 def step_harness_smoke() -> None:
-    # 真实 DeepSeek Harness smoke test：支持平台必须真实运行；不支持平台 skip（仍 exit 0）
+    # Final Gate requires a real official-SDK run on Linux. A platform skip is
+    # explicit failure, never evidence of an integration pass.
+    output = EVIDENCE / "runtime-conformance" / "harness-smoke-linux.txt"
+    if sys.platform != "linux":
+        message = f"FAIL: Linux Harness smoke required; current platform is {sys.platform}.\n"
+        write(output, message)
+        raise StepError(message.strip())
     r = run([PYTHON, "-m", "pytest", "-m", "harness_smoke", "-q"])
-    write(EVIDENCE / "runtime-conformance" / "harness-smoke.txt", r.stdout + r.stderr)
+    output_text = r.stdout + r.stderr
+    write(output, output_text)
     require_ok(r, "DeepSeek Harness smoke test")
+    if "skipped" in output_text.lower():
+        raise StepError("DeepSeek Harness smoke test skipped; a real Linux PASS is mandatory")
 
 
 def step_consistency() -> None:
@@ -149,6 +178,7 @@ STEPS = [
     ("compose", step_compose),
     ("secret_scan", step_secret_scan),
     ("policy_bypass", step_policy_bypass),
+    ("physical_boundary", step_physical_boundary),
     ("conformance", step_conformance),
     ("harness_smoke", step_harness_smoke),
     ("consistency", step_consistency),
@@ -156,19 +186,45 @@ STEPS = [
 
 
 def main() -> int:
-    print("=== M0.1 Evidence Pipeline ===", flush=True)
+    print("=== M0 Final Evidence Pipeline ===", flush=True)
     failures: list[str] = []
+    statuses: dict[str, str] = {}
     for name, fn in STEPS:
         print(f"[{name}] ...", flush=True)
         try:
             fn()
-            print(f"  PASS")
-        except StepFailure as exc:
+            statuses[name] = "PASS"
+            print("  PASS")
+        except StepError as exc:
             failures.append(name)
+            statuses[name] = "FAIL"
             print(f"  FAIL: {exc}")
         except FileNotFoundError as exc:
             failures.append(name)
+            statuses[name] = "FAIL"
             print(f"  FAIL: missing tool: {exc}")
+
+    source = run(["git", "rev-parse", "HEAD"])
+    source_commit = source.stdout.strip() if source.returncode == 0 else "UNAVAILABLE"
+    try:
+        sdk_version = importlib.metadata.version("deepseek-harness-sdk")
+    except importlib.metadata.PackageNotFoundError:
+        sdk_version = "UNAVAILABLE"
+    manifest = {
+        "source_commit": source_commit,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "deepseek_harness_sdk": sdk_version,
+        "tests": statuses,
+    }
+    write(EVIDENCE / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    write(EVIDENCE / "provenance" / "source-commit.txt", f"SOURCE_COMMIT={source_commit}\n")
+    write(
+        EVIDENCE / "provenance" / "tool-versions.txt",
+        f"Python={sys.version}\nPlatform={platform.platform()}\n"
+        f"deepseek-harness-sdk={sdk_version}\n",
+    )
 
     print()
     if failures:

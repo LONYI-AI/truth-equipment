@@ -20,18 +20,17 @@ Perception → State → Reasoning → Planning → Tool Execution
 
 ## 当前状态
 
-**阶段：M0.1 Hardening Sprint 完成，Pending Owner M0 Gate。**
+**阶段：M0 Final Candidate 准备中，Pending Owner M0 Gate。**
 
-v3.0 规格（Physical Agent OS）为权威基线（见 [`docs/SPEC_V3.0.md`](docs/SPEC_V3.0.md)）。M0 首次 Gate Review = REVISION REQUIRED，M0.1 已完成全部 14 项 P0 整改。
+当前权威设计由 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 与正式产品/安全文档共同定义；历史规格和阶段审计仅保留在 Git history。
 
 | 关键交付 | 状态 |
 |---|---|
 | Physical Safety Kernel（Capability Gateway / Policy / Approval / Execution / Verification / Audit / KillSwitch）| ✅ `src/physical_agent/` |
 | DeepSeek Harness 真实 SDK 集成（官方 `deepseek_harness.DeepSeekHarness` + Cordis composition + CI smoke test）| ✅ `src/physical_agent/runtime/deepseek_harness.py` + `harness/*/cordis.yml` + `tests/runtime-conformance/test_deepseek_harness_smoke.py` |
 | LangGraph / Mock runtime | ✅ `src/physical_agent/runtime/` |
-| 测试套件（unit/security/conformance/simulation + DeepSeek smoke）| ✅ 136 passed + 1 DeepSeek smoke（Linux 真实运行 / Windows skip），coverage 91%（门禁 ≥75%）|
+| 测试套件（unit/security/conformance/simulation + DeepSeek smoke）| ✅ 本地安全回归；Linux Harness smoke 仅能由支持平台 CI 作为 Gate evidence |
 | Evidence pipeline + CI + pre-commit + consistency | ✅ `scripts/` + `.github/` |
-| M0.1 报告 | ✅ [`docs/audits/2026-08-16-m0.1-hardening.md`](docs/audits/2026-08-16-m0.1-hardening.md) |
 
 **治理状态（铁律，见 [AGENTS.md](AGENTS.md) §6）**：
 - 所有 ADR 状态 = `Proposed / Pending Owner Approval`，**非 Accepted**。
@@ -43,9 +42,8 @@ v3.0 规格（Physical Agent OS）为权威基线（见 [`docs/SPEC_V3.0.md`](do
 | 目录 | 内容 |
 |---|---|
 | `src/physical_agent/` | 核心包：runtime / capability / policy / execution / verification / adapters / memory / audit / safety（Safety Kernel）|
-| `docs/` | 产品规格、架构、安全模型、威胁模型、路线图、验收测试、Runbook、兼容矩阵、证据矩阵、SPEC v3.0 |
+| `docs/` | 当前产品规格、架构、安全模型、威胁模型、路线图、验收测试、Runbook、兼容矩阵 |
 | `docs/DECISIONS/` | ADR（架构决策记录，Proposed / Pending Owner Approval）|
-| `docs/audits/` | 阶段性审计报告 |
 | `hardware/` | 开发板选型、GPIO 分配、原理图、电气审查清单、BOM |
 | `harness/` | DeepSeek Harness profile（development / physical）|
 | `tests/` | unit / integration / contract / security / simulation / runtime-conformance / physical |

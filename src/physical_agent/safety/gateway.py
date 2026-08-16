@@ -140,9 +140,26 @@ class CapabilityGateway:
         approval_id: str,
         context: RiskContext | None = None,
     ) -> dict[str, Any]:
-        """审批通过后执行（P0-4）：消费一次性 ApprovalGrant。"""
+        """Run an approval only if the *current* policy still authorizes it."""
         definition = self.registry.get(request.capability_id)
         decision = self.policy.evaluate(request, context)
+
+        # Approval is bound authorization, not a bypass of a later policy
+        # decision.  This must precede consumption so a denied request leaves
+        # its grant intact and cannot dispatch through a stale approval.
+        if not decision.allowed:
+            self.audit.append(
+                "policy_rejected_after_approval",
+                request.correlation_id,
+                {
+                    "approval_id": approval_id,
+                    "capability_id": request.capability_id,
+                    "principal": request.principal,
+                    "device_id": request.device_id,
+                    "policy_reason": decision.reason,
+                },
+            )
+            return {"status": "rejected", "reason": decision.reason}
 
         # 消费审批（校验单次使用/过期/参数绑定/重放）
         try:

@@ -46,7 +46,7 @@ dev env
 | M0-02 | 配置 pre-commit hooks | .pre-commit-config.yaml | `gitleaks` 扫描通过；secret pattern 检查启用 |
 | M0-03 | 编写 CI pipeline | .github/workflows/ci.yml | PR 自动触发：lint → test → secret-scan → yaml-lint |
 | M0-04 | 建立 secrets 机制 | .env.example + scripts/generate_secrets.sh | `.env` 被 gitignore；生成脚本可用 |
-| M0-05 | Docker Compose 栈草案 | compose.yaml.yml | HA + Ollama + Qdrant + Mosquitto（注释掉）；版本全 pin |
+| M0-05 | Docker Compose 栈草案 | compose.yaml | HA + Ollama + Qdrant + Mosquitto（注释掉）；版本全 pin |
 | M0-06 | Mosquitto 加固配置 | docker/mosquitto/config/* | 匿名关闭；password_file 示例；ACL 示例 |
 | M0-07 | Python 项目初始化 | pyproject.toml + requirements.txt | ruff + pytest + mypy 配置就绪 |
 | M0-08 | ADR-0000 模板 + ADR-0001~0009 | docs/DECISIONS/ | 每个 ADR 有 Status、Context、Decision、Consequences |
@@ -67,7 +67,7 @@ dev env
 **放行检查表**：
 - [ ] CI 全绿且已合并到 main
 - [ ] Secrets 机制验证：`.env.example` 可生成工作配置
-- [ ] 架构评审纪要已归档到 `docs/audits/`
+- [ ] 架构评审与 Owner Gate 状态已记录在正式文档和 Git history
 - [ ] 无 P0/P1 级安全问题遗留
 
 ---
@@ -157,13 +157,13 @@ def test_rate_limit_exceeded():
 
 | # | 任务 | 产出 | 验收标准 |
 |---|---|---|---|
-| M1B-01 | 部署 HA Docker 容器（生产服务器）| compose.yaml.yml 更新 | HA 可通过 `http://server:8123` 访问 |
+| M1B-01 | 部署 HA Docker 容器（生产服务器）| compose.yaml 更新 | HA 可通过 `http://server:8123` 访问 |
 | M1B-02 | 创建 HA 专用 Integration Token | 文档记录步骤 | Token 权限最小化（仅白名单 entity）|
 | M1B-03 | 替换 Fake HA 为真实 HA Client | src/physical_agent/adapters/ha_client.py | WebSocket 状态订阅 + REST API 调用 |
 | M1B-04 | 只读 Smoke Test | tests/integration/test_ha_readonly.py | 能读取实体状态、传感器数值 |
 | M1B-05 | 受控写测试（手动确认每次）| tests/integration/test_ha_controlled_write.py | 经人工确认后可成功调用 climate.turn_on |
 | M1B-06 | Token 权限审计脚本 | scripts/audit_token_permissions.py | 列出 token 可访问的全部 entity |
-| M1B-07 | MQTT Broker 启动（可选，见 ADR-0009）| compose.yaml.yml 取消注释 | Mosquitto 运行且鉴权生效 |
+| M1B-07 | MQTT Broker 启动（可选，见 ADR-0009）| compose.yaml 更新 | Mosquitto 运行且鉴权生效 |
 
 ### 4.2 DoD
 
@@ -188,7 +188,7 @@ def test_rate_limit_exceeded():
 | # | 任务 | 产出 | 验收标准 |
 |---|---|---|---|
 | M1C-01 | 硬件接收与检验 | 开箱照片 + 元件清单 | H1-H8 全部到位，无缺损坏 |
-| M1C-02 | 面包板插接电路 | 接线图照片 | 按 HARDWARE_BOM §2 接线完成 |
+| M1C-02 | 面包板插接电路 | 接线图照片 | 按 `hardware/schematic/IR_GATEWAY_SCHEMATIC.md` 接线完成 |
 | M1C-03 | ESPHome 固件编写 | src/physical_agent/adapters/esphome/bedroom-ac.yaml | 含 IR transmitter + SHT31 + IR receiver |
 | M1C-04 | 固件编译（本地或云端）| 编译日志 | `esphome compile` 成功，无 error/warning |
 | M1C-05 | 固件烧录 | 设备串口日志 | ESP32-C3 成功连接 WiFi，出现在 HA 中 |

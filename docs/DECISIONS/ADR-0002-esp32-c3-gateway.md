@@ -23,7 +23,7 @@ Proposed / Pending Owner Approval（原 v0.1 为 Accepted，已撤回，见 P0-9
 - ESPHome 版本 ≥ 2024.6.x（推荐 2026.4.x+）
 - 框架：ESP-IDF（默认，不要切换到 Arduino）
 - 使用 `remote_transmitter` + `remote_receiver` 组件
-- Climate 平台根据空调品牌选择（见 HARDWARE_BOM §5.2）
+- Climate 平台根据空调品牌选择（见 `hardware/BOM.md`）
 
 ## Consequences
 

@@ -449,7 +449,7 @@ class VerificationResult:
 | PRODUCT_SPEC.md | 产品规格与需求 |
 | SECURITY_MODEL.md | 安全模型与权限设计 |
 | THREAT_MODEL.md | 威胁建模与缓解措施 |
-| HARDWARE_BOM.md | 硬件清单与采购指南 |
+| hardware/BOM.md | 硬件清单与采购指南 |
 | ROADMAP.md | 里程碑路线图 |
 | ACCEPTANCE_TESTS.md | 验收标准与测试用例 |
 | RUNBOOK.md | 运维手册与故障排查 |

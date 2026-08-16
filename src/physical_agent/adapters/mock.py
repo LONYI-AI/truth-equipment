@@ -65,6 +65,7 @@ class MockAdapter:
 
     def __init__(self, device: MockDevice | None = None) -> None:
         self._device = device or MockDevice()
+        self.execute_calls = 0
 
     async def discover(self) -> list[Device]:
         return [
@@ -83,6 +84,7 @@ class MockAdapter:
         return DeviceState(device_id=device_id, state=self._device.observe(), available=True)
 
     async def execute(self, request: Any) -> ExecutionEvidence:
+        self.execute_calls += 1
         params = request.parameters
         try:
             if request.capability_id == "home.climate.turn_on":

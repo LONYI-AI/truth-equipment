@@ -3,8 +3,7 @@
 版本：v0.2（2026-08-16，Architecture Audit v0.2）
 状态：**Proposed / Pending Owner Approval**
 
-> **本文件从 v0.1 修订**，关键变更见 [CHANGELOG_FROM_V01.md](CHANGELOG_FROM_V01.md)。
-> 重点修正：HA 授权模型（P0-5）、审计完整性语义（P0-10）、secrets fail-closed（P0-8）。
+> 当前安全模型以本文件为唯一事实来源；历史修订记录仅保留在 Git history。
 
 ---
 

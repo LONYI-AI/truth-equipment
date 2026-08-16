@@ -36,26 +36,15 @@ jobs:
       - name: Runtime conformance
         run: pytest tests/runtime-conformance/ -q -m "not harness_smoke"
 
-      - name: DeepSeek Harness smoke test (real SDK + local model proxy)
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p evidence/runtime-conformance
-          {
-            echo "OS: $(. /etc/os-release && echo \"$PRETTY_NAME\")"
-            echo "Python: $(python --version)"
-            echo "deepseek-harness-sdk: $(python -c 'import importlib.metadata as m; print(m.version("deepseek-harness-sdk"))')"
-            echo "Commit SHA: $(git rev-parse HEAD)"
-            echo "Test result:"
-            pytest -m harness_smoke -q -v
-          } 2>&1 | tee evidence/runtime-conformance/harness-smoke-linux.txt
+      - name: M0 final evidence gate (includes Linux Harness smoke)
+        run: python scripts/verify_m0.py
 
-      - name: Upload Linux Harness smoke evidence
+      - name: Upload M0 final evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: harness-smoke-linux
-          path: evidence/runtime-conformance/harness-smoke-linux.txt
+          name: m0-final-evidence
+          path: evidence/
           if-no-files-found: error
 
       - name: Policy bypass tests

@@ -58,18 +58,18 @@ test_project_structure():
         "docs/ARCHITECTURE.md",
         "docs/SECURITY_MODEL.md",
         "docs/THREAT_MODEL.md",
-        "docs/HARDWARE_BOM.md",
+        "hardware/BOM.md",
         "docs/ROADMAP.md",
         "docs/ACCEPTANCE_TESTS.md",  # 本文件
         "docs/RUNBOOK.md",
         "docs/DECISIONS/",
-        "compose.yaml.yml",
+        "compose.yaml",
         ".env.example",
         ".gitignore",
         "AGENTS.md",
         "README.md",
         "pyproject.toml",
-        "tests/__init__.py",
+        "tests/conftest.py",
     ]
     for path in required:
         assert Path(path).exists(), f"Missing: {path}"

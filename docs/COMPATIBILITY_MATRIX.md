@@ -241,7 +241,7 @@ class QdrantMemoryStore: ...  # planned adapter，未实现
 
 - 生产基线：Compose v2 插件；**根目录 `compose.yaml`（prod 默认）+ `compose.dev.yaml`（dev override）**
 - 已废弃 `version:` 字段；已废弃 `docker/compose.core.yml`（v0.1 路径冲突）
-- 详见根目录 compose 文件与 CHANGELOG_FROM_V01.md
+- 详见根目录 compose 文件。
 
 ---
 

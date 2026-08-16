@@ -309,7 +309,7 @@ touch .kill_switch
 
 # 2. 物理检查
 # 拍照记录当前硬件状态
-# 对比 HARDWARE_BOM.md 中的接线图
+# 对比 `hardware/schematic/IR_GATEWAY_SCHEMATIC.md` 中的接线图
 
 # 3. 检查固件完整性
 esphome compile src/physical_agent/adapters/esphome/bedroom-ac.yaml
@@ -471,8 +471,8 @@ esphome upload <old_firmware_binary>  # 需保留旧编译产物
 | 安全模型 | docs/SECURITY_MODEL.md |
 | 威胁模型 | docs/THREAT_MODEL.md |
 | ADR 决策记录 | docs/DECISIONS/ |
-| 审计报告 | docs/audits/ |
-| 硬件手册 | docs/HARDWARE_BOM.md |
+| 运行证据 | evidence/（仅与当前 SOURCE_COMMIT 绑定的输出） |
+| 硬件手册 | hardware/BOM.md |
 | 验收标准 | docs/ACCEPTANCE_TESTS.md |
 
 ### 8.2 外部社区（遇到问题时查阅）
