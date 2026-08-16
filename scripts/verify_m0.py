@@ -16,6 +16,8 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import platform
+import re
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -104,7 +106,7 @@ def step_compose() -> None:
 
 
 def step_secret_scan() -> None:
-    # 简单的 secret 扫描（真实 grep 输出）
+    """Deterministic repository secret scan without a platform shell dependency."""
     patterns = [
         r"(?i)(api[_-]?key|secret|token|password|passwd)\s*[:=]\s*['\"][^'\"]{8,}['\"]",
         r"-----BEGIN (RSA|OPENSSH|EC) PRIVATE KEY-----",
@@ -112,12 +114,27 @@ def step_secret_scan() -> None:
         r"sk-[A-Za-z0-9]{20,}",  # OpenAI-style key
     ]
     hits: list[str] = []
-    for pattern in patterns:
-        r = run(["grep", "-rnE", pattern, "src", "tests", "docs", "harness", "hardware",
-                 "compose.yaml", "compose.dev.yaml", "compose.prod.yaml", "pyproject.toml",
-                 "--exclude-dir=.venv", "--exclude-dir=__pycache__"])
-        if r.stdout.strip():
-            hits.append(f"[pattern {pattern}]\n{r.stdout}")
+    scan_targets = [
+        ROOT / "src",
+        ROOT / "tests",
+        ROOT / "docs",
+        ROOT / "harness",
+        ROOT / "hardware",
+        ROOT / "compose.yaml",
+        ROOT / "compose.dev.yaml",
+        ROOT / "compose.prod.yaml",
+        ROOT / "pyproject.toml",
+    ]
+    files: list[Path] = []
+    for target in scan_targets:
+        files.extend(target.rglob("*") if target.is_dir() else [target])
+    for path in files:
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for pattern in patterns:
+            if re.search(pattern, text):
+                hits.append(f"[pattern {pattern}] {path.relative_to(ROOT)}")
     if hits:
         write(EVIDENCE / "security" / "secret-scan.txt", "SECRETS FOUND:\n\n" + "\n\n".join(hits))
         raise StepError("secrets found in repository (see evidence/security/secret-scan.txt)")
@@ -185,8 +202,22 @@ STEPS = [
 ]
 
 
+def reset_evidence() -> None:
+    """Delete only the designated generated-evidence directory before a run."""
+    target = EVIDENCE.resolve()
+    if target.parent != ROOT.resolve():
+        raise StepError(f"refusing to reset evidence outside repository: {target}")
+    if target.exists():
+        shutil.rmtree(target)
+
+
 def main() -> int:
     print("=== M0 Final Evidence Pipeline ===", flush=True)
+    try:
+        reset_evidence()
+    except (OSError, StepError) as exc:
+        print(f"Evidence pipeline FAILED: cannot reset evidence: {exc}")
+        return 1
     failures: list[str] = []
     statuses: dict[str, str] = {}
     for name, fn in STEPS:
