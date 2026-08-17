@@ -1,43 +1,41 @@
-﻿import json
+"""Home Assistant transport client 单元测试（M1B）。
+
+覆盖：URL normalization、Authorization header、/api/、state read、service call、
+HTTP errors、timeout、401、malformed response、WebSocket 握手/鉴权/订阅。
+安全约束：token / Authorization header / service payload 绝不出现在异常消息中。
+"""
+
+from __future__ import annotations
+
+import json
 from typing import Any
+
+import pytest
 
 from physical_agent.adapters import ha_client
 from physical_agent.adapters.ha_client import (
     HomeAssistantAuthError,
     HomeAssistantClient,
+    HomeAssistantError,
 )
-from physical_agent.audit.store import AuditStore
 
 
 class _FakeResponse:
-    def __init__(
-        self,
-        payload: Any,
-        *,
-        status_code: int = 200,
-    ) -> None:
+    def __init__(self, payload: Any, *, status_code: int = 200, bad_json: bool = False) -> None:
         self._payload = payload
         self.status_code = status_code
+        self._bad_json = bad_json
 
     def raise_for_status(self) -> None:
         if self.status_code < 400:
             return
-
-        request = ha_client.httpx.Request(
-            "GET",
-            "http://localhost:8123/api/",
-        )
-        response = ha_client.httpx.Response(
-            self.status_code,
-            request=request,
-        )
-        raise ha_client.httpx.HTTPStatusError(
-            f"HTTP {self.status_code}",
-            request=request,
-            response=response,
-        )
+        request = ha_client.httpx.Request("GET", "http://localhost:8123/api/")
+        response = ha_client.httpx.Response(self.status_code, request=request)
+        raise ha_client.httpx.HTTPStatusError(f"HTTP {self.status_code}", request=request, response=response)
 
     def json(self) -> Any:
+        if self._bad_json:
+            raise ValueError("not json")
         return self._payload
 
 
@@ -48,104 +46,252 @@ class _FakeHttpClient:
         payload: Any,
         *,
         status_code: int = 200,
+        raise_exc: Exception | None = None,
+        bad_json: bool = False,
         **kwargs: Any,
     ) -> None:
         captured["client_kwargs"] = kwargs
         self._captured = captured
         self._payload = payload
         self._status_code = status_code
+        self._raise_exc = raise_exc
+        self._bad_json = bad_json
 
-    async def __aenter__(self) -> "_FakeHttpClient":
+    async def __aenter__(self) -> _FakeHttpClient:
         return self
 
-    async def __aexit__(
-        self,
-        exc_type: Any,
-        exc: Any,
-        tb: Any,
-    ) -> None:
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         return None
 
-    async def request(
-        self,
-        method: str,
-        path: str,
-        *,
-        json: dict[str, Any] | None = None,
-    ) -> _FakeResponse:
-        self._captured["request"] = {
-            "method": method,
-            "path": path,
-            "json": json,
-        }
+    async def request(self, method: str, path: str, *, json: dict[str, Any] | None = None) -> _FakeResponse:
+        self._captured["request"] = {"method": method, "path": path, "json": json}
+        if self._raise_exc is not None:
+            raise self._raise_exc
         return _FakeResponse(
             self._payload,
             status_code=self._status_code,
+            bad_json=self._bad_json,
         )
 
 
-async def test_rest_client_disables_environment_proxy(monkeypatch: Any) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_async_client(**kwargs: Any) -> _FakeHttpClient:
+def _install_fake_async_client(
+    monkeypatch: Any,
+    captured: dict[str, Any],
+    *,
+    payload: Any = None,
+    status_code: int = 200,
+    raise_exc: Exception | None = None,
+    bad_json: bool = False,
+) -> None:
+    def fake_async_client(**kw: Any) -> _FakeHttpClient:
         return _FakeHttpClient(
             captured,
-            {"message": "API running."},
-            **kwargs,
+            payload,
+            status_code=status_code,
+            raise_exc=raise_exc,
+            bad_json=bad_json,
+            **kw,
         )
 
-    monkeypatch.setattr(
-        ha_client.httpx,
-        "AsyncClient",
-        fake_async_client,
-    )
+    monkeypatch.setattr(ha_client.httpx, "AsyncClient", fake_async_client)
 
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "test-token",
-    )
 
+# ---- URL normalization ----
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("http://localhost:8123", "http://localhost:8123"),
+        ("http://localhost:8123/", "http://localhost:8123"),
+        ("http://localhost:8123///", "http://localhost:8123"),
+        ("http://localhost:8123/api", "http://localhost:8123"),
+        ("http://localhost:8123/api/", "http://localhost:8123"),
+        ("  http://localhost:8123  ", "http://localhost:8123"),
+    ],
+)
+def test_normalize_base_url(raw: str, expected: str) -> None:
+    assert HomeAssistantClient.normalize_base_url(raw) == expected
+
+
+def test_normalize_base_url_rejects_empty() -> None:
+    with pytest.raises(ValueError):
+        HomeAssistantClient.normalize_base_url("")
+    with pytest.raises(ValueError):
+        HomeAssistantClient.normalize_base_url("   ")
+    with pytest.raises(ValueError):
+        HomeAssistantClient.normalize_base_url("/api/")
+
+
+def test_empty_token_rejected() -> None:
+    with pytest.raises(ValueError):
+        HomeAssistantClient("http://localhost:8123", "")
+
+
+def test_websocket_url_derivation() -> None:
+    client = HomeAssistantClient("https://ha.example.com:8123", "tok")
+    assert client.websocket_url == "wss://ha.example.com:8123/api/websocket"
+    client_http = HomeAssistantClient("http://localhost:8123", "tok")
+    assert client_http.websocket_url == "ws://localhost:8123/api/websocket"
+
+
+# ---- Authorization header / REST ----
+
+
+async def test_rest_sends_bearer_header_and_disables_proxy(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload={"message": "API running."})
+
+    client = HomeAssistantClient("http://localhost:8123", "test-token")
     result = await client.api_status()
 
     assert result == {"message": "API running."}
-    assert captured["client_kwargs"]["trust_env"] is False
-    assert captured["client_kwargs"]["base_url"] == "http://localhost:8123"
+    kwargs = captured["client_kwargs"]
+    assert kwargs["trust_env"] is False
+    assert kwargs["base_url"] == "http://localhost:8123"
+    assert kwargs["headers"]["Authorization"] == "Bearer test-token"
+    assert kwargs["headers"]["Content-Type"] == "application/json"
+    assert captured["request"] == {"method": "GET", "path": "/api/", "json": None}
+
+
+async def test_list_states_roundtrip(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    payload = [{"entity_id": "light.demo", "state": "off"}]
+    _install_fake_async_client(monkeypatch, captured, payload=payload)
+
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    assert await client.list_states() == payload
+    assert captured["request"]["path"] == "/api/states"
+
+
+async def test_get_state_roundtrip(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    payload = {"entity_id": "light.demo", "state": "on"}
+    _install_fake_async_client(monkeypatch, captured, payload=payload)
+
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    assert await client.get_state("light.demo") == payload
+    assert captured["request"]["path"] == "/api/states/light.demo"
+
+
+async def test_call_service_roundtrip(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    payload = [{"entity_id": "light.demo", "state": "on"}]
+    _install_fake_async_client(monkeypatch, captured, payload=payload)
+
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    result = await client.call_service("light", "turn_on", {"entity_id": "light.demo"})
+    assert result == payload
     assert captured["request"] == {
-        "method": "GET",
-        "path": "/api/",
-        "json": None,
+        "method": "POST",
+        "path": "/api/services/light/turn_on",
+        "json": {"entity_id": "light.demo"},
     }
 
 
+# ---- error mapping ----
+
+
+async def test_401_maps_to_auth_error(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload={"message": "Unauthorized"}, status_code=401)
+    client = HomeAssistantClient("http://localhost:8123", "secret-token")
+    with pytest.raises(HomeAssistantAuthError):
+        await client.api_status()
+
+
+async def test_403_maps_to_auth_error(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload={}, status_code=403)
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantAuthError):
+        await client.api_status()
+
+
+async def test_500_maps_to_generic_error(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload={}, status_code=500)
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantError) as excinfo:
+        await client.api_status()
+    assert "500" in str(excinfo.value)
+
+
+async def test_timeout_maps_to_generic_error(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(
+        monkeypatch,
+        captured,
+        payload={},
+        raise_exc=ha_client.httpx.TimeoutException("timed out"),
+    )
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantError):
+        await client.api_status()
+
+
+async def test_connect_error_maps_to_generic_error(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(
+        monkeypatch,
+        captured,
+        payload={},
+        raise_exc=ha_client.httpx.ConnectError("refused"),
+    )
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantError):
+        await client.api_status()
+
+
+async def test_invalid_json_maps_to_generic_error(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload="<html>", bad_json=True)
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantError, match="invalid JSON"):
+        await client.api_status()
+
+
+async def test_malformed_list_states_rejected(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload={"not": "a list"})
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantError, match="unexpected /api/states"):
+        await client.list_states()
+
+
+async def test_malformed_get_state_rejected(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload=["not", "a", "dict"])
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantError, match="unexpected entity state"):
+        await client.get_state("light.demo")
+
+
+async def test_malformed_service_response_rejected(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload={"not": "a list"})
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    with pytest.raises(HomeAssistantError, match="unexpected service"):
+        await client.call_service("light", "turn_on", {"entity_id": "light.demo"})
+
+
+async def test_secret_never_appears_in_error_message(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _install_fake_async_client(monkeypatch, captured, payload={}, status_code=401)
+    client = HomeAssistantClient("http://localhost:8123", "super-secret-token")
+    with pytest.raises(HomeAssistantAuthError) as excinfo:
+        await client.api_status()
+    assert "super-secret-token" not in str(excinfo.value)
+    assert "Bearer" not in str(excinfo.value)
+
+
+# ---- WebSocket ----
+
+
 class _FakeWebSocket:
-    def __init__(self) -> None:
+    def __init__(self, messages: list[str]) -> None:
         self.sent: list[dict[str, Any]] = []
-        self._messages = iter(
-            [
-                json.dumps({"type": "auth_required"}),
-                json.dumps({"type": "auth_ok"}),
-                json.dumps(
-                    {
-                        "id": 1,
-                        "type": "result",
-                        "success": True,
-                    }
-                ),
-                json.dumps(
-                    {
-                        "id": 1,
-                        "type": "event",
-                        "event": {
-                            "data": {
-                                "entity_id": "light.demo",
-                                "old_state": {"state": "off"},
-                                "new_state": {"state": "on"},
-                            }
-                        },
-                    }
-                ),
-            ]
-        )
+        self._messages = iter(messages)
 
     async def recv(self) -> str:
         return next(self._messages)
@@ -161,38 +307,46 @@ class _FakeWebSocketContext:
     async def __aenter__(self) -> _FakeWebSocket:
         return self.websocket
 
-    async def __aexit__(
-        self,
-        exc_type: Any,
-        exc: Any,
-        tb: Any,
-    ) -> None:
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         return None
 
 
-async def test_websocket_client_disables_proxy(monkeypatch: Any) -> None:
-    captured: dict[str, Any] = {}
-    websocket = _FakeWebSocket()
+def _ok_websocket_messages() -> list[str]:
+    return [
+        json.dumps({"type": "auth_required"}),
+        json.dumps({"type": "auth_ok"}),
+        json.dumps({"id": 1, "type": "result", "success": True}),
+        json.dumps(
+            {
+                "id": 1,
+                "type": "event",
+                "event": {
+                    "data": {
+                        "entity_id": "light.demo",
+                        "old_state": {"state": "off"},
+                        "new_state": {"state": "on"},
+                    }
+                },
+            }
+        ),
+    ]
 
-    def fake_connect(
-        uri: str,
-        **kwargs: Any,
-    ) -> _FakeWebSocketContext:
+
+def _install_fake_connect(monkeypatch: Any, captured: dict[str, Any], websocket: _FakeWebSocket) -> None:
+    def fake_connect(uri: str, **kwargs: Any) -> _FakeWebSocketContext:
         captured["uri"] = uri
         captured["connect_kwargs"] = kwargs
         return _FakeWebSocketContext(websocket)
 
-    monkeypatch.setattr(
-        ha_client,
-        "connect",
-        fake_connect,
-    )
+    monkeypatch.setattr(ha_client, "connect", fake_connect)
 
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "test-token",
-    )
 
+async def test_websocket_handshake_and_subscribe(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    websocket = _FakeWebSocket(_ok_websocket_messages())
+    _install_fake_connect(monkeypatch, captured, websocket)
+
+    client = HomeAssistantClient("http://localhost:8123", "test-token")
     stream = client.state_changes({"light.demo"})
     try:
         event = await anext(stream)
@@ -201,371 +355,76 @@ async def test_websocket_client_disables_proxy(monkeypatch: Any) -> None:
 
     assert captured["uri"] == "ws://localhost:8123/api/websocket"
     assert captured["connect_kwargs"]["proxy"] is None
-
-    assert websocket.sent[0] == {
-        "type": "auth",
-        "access_token": "test-token",
-    }
+    assert websocket.sent[0] == {"type": "auth", "access_token": "test-token"}
     assert websocket.sent[1] == {
         "id": 1,
         "type": "subscribe_events",
         "event_type": "state_changed",
     }
-
     assert event["entity_id"] == "light.demo"
     assert event["old_state"]["state"] == "off"
     assert event["new_state"]["state"] == "on"
 
 
-
-async def test_rest_success_is_audited_with_correlation_id(
-    monkeypatch: Any,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_async_client(**kwargs: Any) -> _FakeHttpClient:
-        return _FakeHttpClient(
-            captured,
-            {"message": "API running."},
-            **kwargs,
-        )
-
-    monkeypatch.setattr(
-        ha_client.httpx,
-        "AsyncClient",
-        fake_async_client,
+async def test_websocket_auth_invalid(monkeypatch: Any) -> None:
+    websocket = _FakeWebSocket(
+        [
+            json.dumps({"type": "auth_required"}),
+            json.dumps({"type": "auth_invalid", "message": "Invalid access token"}),
+        ]
     )
+    _install_fake_connect(monkeypatch, {}, websocket)
 
-    audit = AuditStore()
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "super-secret-token",
-        audit=audit,
+    client = HomeAssistantClient("http://localhost:8123", "secret-invalid-token")
+    stream = client.state_changes()
+    with pytest.raises(HomeAssistantAuthError) as excinfo:
+        await anext(stream)
+    await stream.aclose()
+    # token 与 HA 返回的 error message 均不得泄漏进异常
+    assert "secret-invalid-token" not in str(excinfo.value)
+    assert "Invalid access token" not in str(excinfo.value)
+
+
+async def test_websocket_unexpected_auth_response(monkeypatch: Any) -> None:
+    websocket = _FakeWebSocket(
+        [
+            json.dumps({"type": "auth_required"}),
+            json.dumps({"type": "weird"}),
+        ]
     )
+    _install_fake_connect(monkeypatch, {}, websocket)
 
-    result = await client.api_status(
-        correlation_id="corr-rest-success",
-    )
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    stream = client.state_changes()
+    with pytest.raises(HomeAssistantError):
+        await anext(stream)
+    await stream.aclose()
 
-    assert result == {"message": "API running."}
 
-    events = audit.events()
-    assert [event.event_type for event in events] == [
-        "ha_api_request",
-        "ha_api_response",
+async def test_websocket_filter_ignores_other_entities(monkeypatch: Any) -> None:
+    messages = _ok_websocket_messages()[:3] + [
+        json.dumps(
+            {
+                "id": 1,
+                "type": "event",
+                "event": {"data": {"entity_id": "switch.other"}},
+            }
+        ),
+        json.dumps(
+            {
+                "id": 1,
+                "type": "event",
+                "event": {"data": {"entity_id": "light.demo", "new_state": {"state": "on"}}},
+            }
+        ),
     ]
-    assert {
-        event.correlation_id
-        for event in events
-    } == {"corr-rest-success"}
+    websocket = _FakeWebSocket(messages)
+    _install_fake_connect(monkeypatch, {}, websocket)
 
-    assert events[0].data == {
-        "transport": "rest",
-        "method": "GET",
-        "path": "/api/",
-    }
-    assert events[1].data == {
-        "transport": "rest",
-        "method": "GET",
-        "path": "/api/",
-        "status_code": 200,
-    }
-
-    serialized = repr(
-        [event.to_dict() for event in events]
-    )
-    assert "super-secret-token" not in serialized
-
-
-async def test_rest_generates_shared_correlation_id(
-    monkeypatch: Any,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_async_client(**kwargs: Any) -> _FakeHttpClient:
-        return _FakeHttpClient(
-            captured,
-            [],
-            **kwargs,
-        )
-
-    monkeypatch.setattr(
-        ha_client.httpx,
-        "AsyncClient",
-        fake_async_client,
-    )
-
-    audit = AuditStore()
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "test-token",
-        audit=audit,
-    )
-
-    assert await client.list_states() == []
-
-    events = audit.events()
-    assert len(events) == 2
-
-    request_event, response_event = events
-    assert request_event.correlation_id.startswith("ha-")
-    assert (
-        response_event.correlation_id
-        == request_event.correlation_id
-    )
-
-
-async def test_rest_auth_failure_is_audited(
-    monkeypatch: Any,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_async_client(**kwargs: Any) -> _FakeHttpClient:
-        return _FakeHttpClient(
-            captured,
-            {"message": "Unauthorized"},
-            status_code=401,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(
-        ha_client.httpx,
-        "AsyncClient",
-        fake_async_client,
-    )
-
-    audit = AuditStore()
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "test-token",
-        audit=audit,
-    )
-
-    try:
-        await client.api_status(
-            correlation_id="corr-rest-auth-failure",
-        )
-    except HomeAssistantAuthError:
-        pass
-    else:
-        raise AssertionError(
-            "expected HomeAssistantAuthError"
-        )
-
-    events = audit.events()
-    assert [event.event_type for event in events] == [
-        "ha_api_request",
-        "ha_api_error",
-    ]
-    assert {
-        event.correlation_id
-        for event in events
-    } == {"corr-rest-auth-failure"}
-
-    assert events[1].data == {
-        "transport": "rest",
-        "method": "GET",
-        "path": "/api/",
-        "status_code": 401,
-        "error": "http_status",
-    }
-
-
-async def test_service_payload_is_not_written_to_audit(
-    monkeypatch: Any,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_async_client(**kwargs: Any) -> _FakeHttpClient:
-        return _FakeHttpClient(
-            captured,
-            [],
-            **kwargs,
-        )
-
-    monkeypatch.setattr(
-        ha_client.httpx,
-        "AsyncClient",
-        fake_async_client,
-    )
-
-    audit = AuditStore()
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "test-token",
-        audit=audit,
-    )
-
-    await client.call_service(
-        "light",
-        "turn_on",
-        {
-            "entity_id": "light.demo",
-            "secret_value": "DO-NOT-AUDIT-ME",
-        },
-        correlation_id="corr-service",
-    )
-
-    assert captured["request"]["json"] == {
-        "entity_id": "light.demo",
-        "secret_value": "DO-NOT-AUDIT-ME",
-    }
-
-    serialized = repr(
-        [event.to_dict() for event in audit.events()]
-    )
-    assert "DO-NOT-AUDIT-ME" not in serialized
-    assert "test-token" not in serialized
-
-
-
-async def test_websocket_success_is_audited_without_secrets(
-    monkeypatch: Any,
-) -> None:
-    captured: dict[str, Any] = {}
-    websocket = _FakeWebSocket()
-
-    def fake_connect(
-        uri: str,
-        **kwargs: Any,
-    ) -> _FakeWebSocketContext:
-        captured["uri"] = uri
-        captured["connect_kwargs"] = kwargs
-        return _FakeWebSocketContext(websocket)
-
-    monkeypatch.setattr(
-        ha_client,
-        "connect",
-        fake_connect,
-    )
-
-    audit = AuditStore()
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "super-secret-ws-token",
-        audit=audit,
-    )
-
-    stream = client.state_changes(
-        {"light.demo"},
-        correlation_id="corr-ws-success",
-    )
+    client = HomeAssistantClient("http://localhost:8123", "tok")
+    stream = client.state_changes({"light.demo"})
     try:
         event = await anext(stream)
     finally:
         await stream.aclose()
-
     assert event["entity_id"] == "light.demo"
-
-    events = audit.events()
-    assert [event.event_type for event in events] == [
-        "ha_ws_connect",
-        "ha_ws_authenticated",
-        "ha_ws_subscribed",
-    ]
-    assert {
-        event.correlation_id
-        for event in events
-    } == {"corr-ws-success"}
-
-    assert events[0].data == {
-        "transport": "websocket",
-        "path": "/api/websocket",
-    }
-    assert events[1].data == {
-        "transport": "websocket",
-        "path": "/api/websocket",
-    }
-    assert events[2].data == {
-        "transport": "websocket",
-        "path": "/api/websocket",
-        "event_type": "state_changed",
-    }
-
-    serialized = repr(
-        [event.to_dict() for event in events]
-    )
-    assert "super-secret-ws-token" not in serialized
-    assert "light.demo" not in serialized
-    assert "old_state" not in serialized
-    assert "new_state" not in serialized
-
-
-class _AuthInvalidWebSocket(_FakeWebSocket):
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
-        self._messages = iter(
-            [
-                json.dumps({"type": "auth_required"}),
-                json.dumps(
-                    {
-                        "type": "auth_invalid",
-                        "message": "Invalid access token",
-                    }
-                ),
-            ]
-        )
-
-
-async def test_websocket_auth_failure_is_audited(
-    monkeypatch: Any,
-) -> None:
-    websocket = _AuthInvalidWebSocket()
-
-    def fake_connect(
-        uri: str,
-        **kwargs: Any,
-    ) -> _FakeWebSocketContext:
-        del uri, kwargs
-        return _FakeWebSocketContext(websocket)
-
-    monkeypatch.setattr(
-        ha_client,
-        "connect",
-        fake_connect,
-    )
-
-    audit = AuditStore()
-    client = HomeAssistantClient(
-        "http://localhost:8123",
-        "secret-invalid-token",
-        audit=audit,
-    )
-
-    stream = client.state_changes(
-        correlation_id="corr-ws-auth-failure",
-    )
-
-    try:
-        await anext(stream)
-    except HomeAssistantAuthError:
-        pass
-    else:
-        raise AssertionError(
-            "expected HomeAssistantAuthError"
-        )
-    finally:
-        await stream.aclose()
-
-    events = audit.events()
-    assert [event.event_type for event in events] == [
-        "ha_ws_connect",
-        "ha_ws_error",
-    ]
-    assert {
-        event.correlation_id
-        for event in events
-    } == {"corr-ws-auth-failure"}
-
-    assert events[1].data == {
-        "transport": "websocket",
-        "path": "/api/websocket",
-        "phase": "auth",
-        "error": "HomeAssistantAuthError",
-    }
-
-    serialized = repr(
-        [event.to_dict() for event in events]
-    )
-    assert "secret-invalid-token" not in serialized
-    assert "Invalid access token" not in serialized

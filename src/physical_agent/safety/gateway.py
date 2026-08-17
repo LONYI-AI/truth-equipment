@@ -82,9 +82,9 @@ class CapabilityGateway:
             return {"status": "rejected", "reason": "audit store not physically ready"}
 
         self.audit.append(
-            "capability_requested", request.correlation_id,
-            {"capability_id": request.capability_id, "principal": request.principal,
-             "execution_mode": self.mode.value},
+            "capability_requested",
+            request.correlation_id,
+            {"capability_id": request.capability_id, "principal": request.principal, "execution_mode": self.mode.value},
         )
 
         # 1. 注册 + policy
@@ -96,9 +96,14 @@ class CapabilityGateway:
             return {"status": "rejected", "reason": str(exc)}
 
         self.audit.append(
-            "policy_evaluated", request.correlation_id,
-            {"tier": int(decision.tier), "allowed": decision.allowed,
-             "requires_approval": decision.requires_approval, "reason": decision.reason},
+            "policy_evaluated",
+            request.correlation_id,
+            {
+                "tier": int(decision.tier),
+                "allowed": decision.allowed,
+                "requires_approval": decision.requires_approval,
+                "reason": decision.reason,
+            },
         )
 
         if not decision.allowed:
@@ -108,8 +113,9 @@ class CapabilityGateway:
         if decision.requires_approval:
             ar = self.approval.request_approval(request, int(decision.tier))
             self.coordinator.begin(request, decision)  # -> NEEDS_APPROVAL
-            self.audit.append("needs_approval", request.correlation_id,
-                              {"approval_id": ar.approval_id, "tier": int(decision.tier)})
+            self.audit.append(
+                "needs_approval", request.correlation_id, {"approval_id": ar.approval_id, "tier": int(decision.tier)}
+            )
             return {
                 "status": "needs_approval",
                 "approval_id": ar.approval_id,
@@ -124,6 +130,7 @@ class CapabilityGateway:
             if not gate.allowed:
                 self.audit.append("write_blocked", request.correlation_id, {"reason": gate.reason})
                 return {"status": "rejected", "reason": gate.reason}
+            self.audit.append("write_gate", request.correlation_id, {"allowed": True, "reason": gate.reason})
 
         return await self._dispatch(request, definition, decision)
 
@@ -132,8 +139,7 @@ class CapabilityGateway:
         grant = self.approval.grant(approval_id, approver=approver)
         # 审计 correlation_id 必须是原始 CapabilityRequest 的 correlation_id，
         # 禁止把 approval_id 填进 correlation_id 字段。
-        self.audit.append("approval_granted", grant.correlation_id,
-                          {"approver": approver, "approval_id": approval_id})
+        self.audit.append("approval_granted", grant.correlation_id, {"approver": approver, "approval_id": approval_id})
         return approval_id
 
     async def execute_approved(
@@ -180,6 +186,7 @@ class CapabilityGateway:
             if not gate.allowed:
                 self.audit.append("write_blocked", request.correlation_id, {"reason": gate.reason})
                 return {"status": "rejected", "reason": gate.reason}
+            self.audit.append("write_gate", request.correlation_id, {"allowed": True, "reason": gate.reason})
 
         return await self._dispatch(request, definition, decision)
 
@@ -230,8 +237,7 @@ class CapabilityGateway:
         self.audit.append(
             "capability_requested",
             request.correlation_id,
-            {"capability_id": request.capability_id, "principal": request.principal,
-             "execution_mode": self.mode.value},
+            {"capability_id": request.capability_id, "principal": request.principal, "execution_mode": self.mode.value},
         )
         # 注意：此处**不**写 "policy_evaluated" —— 本入口不重新 evaluate policy（决策由
         # 上游 graph 的 policy_gate / human_review 产生）。Policy evaluation audit 必须
@@ -291,8 +297,17 @@ class CapabilityGateway:
             return {"status": "failed", "reason": evidence.detail.get("error", "dispatch failed")}
 
         self.coordinator.mark_dispatched(request.correlation_id, evidence.model_dump())
-        self.audit.append("dispatched", request.correlation_id,
-                          {"capability_id": request.capability_id, "execution_mode": self.mode.value})
+        namespace = request.capability_id.split(".", 1)[0]
+        self.audit.append(
+            "dispatched",
+            request.correlation_id,
+            {
+                "capability_id": request.capability_id,
+                "device_id": request.device_id,
+                "adapter": namespace,
+                "execution_mode": self.mode.value,
+            },
+        )
 
         # 验证
         verified = await adapter.verify(evidence)
@@ -301,8 +316,11 @@ class CapabilityGateway:
             capability_id=request.capability_id,
             execution_evidence=verified.model_dump(),
         )
-        self.audit.append("verification", request.correlation_id,
-                          {"level": verification.level.value, "physical_effect": verification.physical_effect})
+        self.audit.append(
+            "verification",
+            request.correlation_id,
+            {"level": verification.level.value, "physical_effect": verification.physical_effect},
+        )
 
         self._advance_state(record, verification.level.value)
         self.audit.append("execution_state", request.correlation_id, {"state": record.state.value})
