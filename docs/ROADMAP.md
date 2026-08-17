@@ -352,15 +352,19 @@ def test_rate_limit_exceeded():
 
 | Milestone | 状态 | 开始日期 | 完成日期 | 备注 |
 |---|---|---|---|---|
-| M0 | ⏳ Planning | - | - | 待 Audit 批准后启动 |
-| M1A | 🔲 Not Started | - | - | 依赖 M0 |
-| M1B | 🔲 Not Started | - | - | 依赖 M0 |
-| M1C | 🔲 Not Started | - | - | 依赖 M1B + 硬件 |
-| M1D | 🔲 Not Started | - | - | 依赖 M1C |
-| M1E | 🔲 Not Started | - | - | 依赖 M1D |
+| M0 | ✅ Completed | - | 已验收 | Safety Kernel 通过验收 |
+| M1A | 🔄 In Progress（Integration Simulation MVP runnable，Gate 未通过）| - | - | 全模拟闭环可运行；`python -m physical_agent.cli` |
+| M1B | 🔲 NOT STARTED | - | - | 依赖 M0（真实 Home Assistant 集成；本轮禁止）|
+| M1C | 🔲 NOT STARTED | - | - | 依赖 M1B + 硬件（ESPHome 物理红外；本轮禁止）|
+| M1D | 🔲 NOT STARTED | - | - | 依赖 M1C（物理验证子系统）|
+| M1E | 🔲 NOT STARTED | - | - | 依赖 M1D（安全加固）|
 | M2 | 🚫 Frozen | - | - | M1E 通过后才解冻 |
 | M3 | 🚫 Frozen | - | - | 同上 |
 | M4 | 🚫 Frozen | - | - | 同上 |
+
+> **M1A Simulation 边界（本轮 Integration Hardening）**：仅全模拟闭环。
+> 尚未完成：M1B Home Assistant 真实集成、PHYSICAL execution（ESPHome / 真实设备控制）、
+> Web UI / 手机 App / 多 Agent。正式 retry lifecycle 记录为后续 hardening 项。
 
 ---
 

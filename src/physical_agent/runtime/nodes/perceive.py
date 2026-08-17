@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from physical_agent.audit.store import AuditStore
 from physical_agent.runtime.graph import NodeHandler
 from physical_agent.runtime.state import AgentState, WorldState
 
@@ -35,11 +36,13 @@ def make_perceive_handler(
     source: WorldStateSource,
     *,
     clock: Callable[[], datetime] | None = None,
+    audit: AuditStore | None = None,
 ) -> NodeHandler:
     """构造 Perceive handler。
 
     - `source`：注入的只读感知源（测试用 Fake HA / deterministic fixture）。
     - `clock`：注入的确定性时钟（测试用固定 datetime，禁止 sleep / wall-clock race）。
+    - `audit`：可选审计存储；感知完成后写入 `perceive_complete`。
 
     M1A Perceive 输出恒为 source="simulation"、provenance="simulated"，
     绝不声称真实物理感知。不篡改 session_id / correlation_id / intent / messages。
@@ -55,6 +58,12 @@ def make_perceive_handler(
             source="simulation",
             provenance="simulated",
         )
+        if audit is not None:
+            audit.append(
+                "perceive_complete",
+                state.get("correlation_id", ""),
+                {"device_count": len(snapshot.devices), "source": "simulation"},
+            )
         return {"world_state": world_state}
 
     return perceive

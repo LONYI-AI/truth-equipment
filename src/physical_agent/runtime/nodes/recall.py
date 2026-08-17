@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from physical_agent.audit.store import AuditStore
 from physical_agent.memory.store import MemoryStore
 from physical_agent.runtime.graph import NodeHandler
 from physical_agent.runtime.planning import MemoryContext
@@ -24,12 +25,14 @@ def make_recall_handler(
     *,
     limit: int = 20,
     preference_keys: tuple[str, ...] = ("preferred_temperature",),
+    audit: AuditStore | None = None,
 ) -> NodeHandler:
     """构造 Recall handler。
 
     - 只读检索：本会话 recent events（bounded，倒序）+ 配置的 preference keys。
     - session-scoped：不读取其他 session 的事件（`query_events(session_id=...)`）。
     - 不产生任何 memory 写入。
+    - `audit`：可选审计存储；检索完成后写入 `recall_complete`。
     """
     if limit <= 0:
         raise ValueError("recall limit must be positive")
@@ -45,6 +48,13 @@ def make_recall_handler(
             value = store.get_preference(key)
             if value is not None:
                 preferences[key] = value
+
+        if audit is not None:
+            audit.append(
+                "recall_complete",
+                state.get("correlation_id", ""),
+                {"events_recalled": len(events), "preferences": list(preferences)},
+            )
 
         return {"memory_context": MemoryContext(events=events, preferences=preferences)}
 

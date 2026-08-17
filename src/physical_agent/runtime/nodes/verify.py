@@ -14,14 +14,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from physical_agent.audit.store import AuditStore
 from physical_agent.capability.schema import VerificationLevel
 from physical_agent.runtime.graph import NodeHandler
 from physical_agent.runtime.state import AgentState
 from physical_agent.verification.evidence import VerificationEvidence
 
 
-def make_verify_handler() -> NodeHandler:
-    """构造 Verify handler（sync：仅做 outcome → VerificationEvidence 的确定性映射）。"""
+def make_verify_handler(*, audit: AuditStore | None = None) -> NodeHandler:
+    """构造 Verify handler（sync：仅做 outcome → VerificationEvidence 的确定性映射）。
+
+    `audit`：可选审计存储；验证完成后写入 `verification_result`。
+    """
 
     def verify(state: AgentState) -> dict[str, Any]:
         outcome = state.get("execution_outcome") or {}
@@ -46,6 +50,18 @@ def make_verify_handler() -> NodeHandler:
             evidence={"provenance": "simulated", "execution": outcome},
             physical_effect=physical_effect,
         )
+
+        if audit is not None:
+            audit.append(
+                "verification_result",
+                correlation_id,
+                {
+                    "level": verification.level.value,
+                    "physical_effect": physical_effect,
+                    "satisfied": satisfied,
+                    "provenance": "simulated",
+                },
+            )
 
         return {
             "verification": verification,

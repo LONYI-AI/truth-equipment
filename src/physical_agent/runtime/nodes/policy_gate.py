@@ -108,8 +108,10 @@ def make_policy_gate_handler(
             return _reject(state, str(exc))
 
         correlation_id = request.correlation_id
+        # 优先取本轮 per-request 风险上下文（Runtime 从 RuntimeContext 派生），缺省回退构造时值
+        effective_risk = state.get("risk_context") or risk_context
         try:
-            decision = policy_engine.evaluate(request, risk_context)
+            decision = policy_engine.evaluate(request, effective_risk)
         except Exception as exc:  # UnknownCapabilityError 等 → fail-closed
             if audit is not None:
                 audit.append("policy_rejected", correlation_id, {"reason": str(exc)})

@@ -130,8 +130,10 @@ class CapabilityGateway:
     def approve(self, approval_id: str, approver: str = "owner") -> str:
         """人工授予审批（P0-4）。创建一次性 ApprovalGrant。返回 approval_id。"""
         grant = self.approval.grant(approval_id, approver=approver)
-        self.audit.append("approval_granted", grant.approval_id,
-                          {"approver": approver})
+        # 审计 correlation_id 必须是原始 CapabilityRequest 的 correlation_id，
+        # 禁止把 approval_id 填进 correlation_id 字段。
+        self.audit.append("approval_granted", grant.correlation_id,
+                          {"approver": approver, "approval_id": approval_id})
         return approval_id
 
     async def execute_approved(
@@ -231,12 +233,9 @@ class CapabilityGateway:
             {"capability_id": request.capability_id, "principal": request.principal,
              "execution_mode": self.mode.value},
         )
-        self.audit.append(
-            "policy_evaluated",
-            request.correlation_id,
-            {"tier": int(decision.tier), "allowed": decision.allowed,
-             "requires_approval": decision.requires_approval, "reason": decision.reason},
-        )
+        # 注意：此处**不**写 "policy_evaluated" —— 本入口不重新 evaluate policy（决策由
+        # 上游 graph 的 policy_gate / human_review 产生）。Policy evaluation audit 必须
+        # 对应真实 evaluation，不得在此伪造重复事件。
 
         # 5. 推进 coordinator：审批已在上游完成，若 requires_approval 则直接到 AUTHORIZED
         if not self.coordinator.has(request.correlation_id):

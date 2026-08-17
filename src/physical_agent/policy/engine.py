@@ -34,24 +34,34 @@ class PolicyDecision:
 
 
 class RateLimiter:
-    """滑动窗口速率限制（确定性）。"""
+    """滑动窗口速率限制（确定性，request/correlation-aware 幂等准入）。
+
+    准入语义（消除 public bypass，避免审批 resume 二次计数）：
+    - **同 capability + 同 correlation_id** 的 re-policy（如审批 resume 的复审）→
+      幂等放行且**不重复计数**：这是同一次真实动作的延续，已在本窗口内准入过。
+    - **不同 correlation_id** → 正常受限：窗口未满则准入计数，已满则拒绝。
+    - 每次 `check` 都执行当前窗口校验；没有任何布尔参数可跳过 rate limit。
+    """
 
     def __init__(self, max_calls: int = 3, window_seconds: float = 60.0) -> None:
         self.max_calls = max_calls
         self.window_seconds = window_seconds
-        self._events: dict[str, list[float]] = {}
+        self._events: dict[str, list[tuple[float, str]]] = {}
 
     def _now(self) -> float:
         return datetime.now(UTC).timestamp()
 
-    def check(self, key: str) -> bool:
+    def check(self, key: str, correlation_id: str) -> bool:
         """返回是否放行（未超限）。"""
         now = self._now()
         window = self._events.setdefault(key, [])
-        window[:] = [t for t in window if now - t <= self.window_seconds]
+        window[:] = [e for e in window if now - e[0] <= self.window_seconds]
+        # 幂等准入：同 correlation_id 已在本窗口内（同一 request 的 re-policy）→ 放行不重复计数
+        if any(cid == correlation_id for _, cid in window):
+            return True
         if len(window) >= self.max_calls:
             return False
-        window.append(now)
+        window.append((now, correlation_id))
         return True
 
 
@@ -86,6 +96,12 @@ class PolicyEngine:
         request: CapabilityRequest,
         context: RiskContext | None = None,
     ) -> PolicyDecision:
+        """确定性评估一次 capability 请求。
+
+        速率限制采用 request/correlation-aware 幂等准入（见 `RateLimiter`）：
+        审批 resume 的 re-policy 对同一 `(capability_id, correlation_id)` 幂等放行且不重复
+        计数，同时**仍执行当前限流校验**；不存在任何跳过 rate limit 的布尔旁路参数。
+        """
         context = context or RiskContext()
 
         # 1. kill switch（只读除外，P0-9：只读用 side_effect 判定，非 risk tier）
@@ -135,8 +151,8 @@ class PolicyEngine:
                 correlation_id=request.correlation_id,
             )
 
-        # 3. 速率限制
-        if not is_read_only and not self.rate_limiter.check(request.capability_id):
+        # 3. 速率限制（request/correlation-aware 幂等准入；无任何 boolean bypass）
+        if not is_read_only and not self.rate_limiter.check(request.capability_id, request.correlation_id):
             return PolicyDecision(
                 allowed=False,
                 tier=RiskTier.SAFETY_SENSITIVE,

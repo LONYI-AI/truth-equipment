@@ -4,6 +4,11 @@
 状态：**待批准** —— 与 Architecture Audit 联合审批
 适用阶段：M0 起（内容随 Milestone 演进）
 
+> **阶段边界（如实区分）**：
+> - ✅ **M1A Simulation**：可运行（`python -m physical_agent.cli`，全模拟闭环）。
+> - ⬜ **M1B Home Assistant**：尚未完成，本节涉及的 HA 容器/Token/受控写运维内容为**未来计划**，非当前可运行能力。
+> - ⬜ **PHYSICAL execution**：尚未完成（ESPHome / IR / 真实设备控制为未来计划）。
+
 ---
 
 ## 1. 快速参考
@@ -48,24 +53,23 @@ curl http://localhost:11434/api/generate  # 测试推理 API
 curl -s http://localhost:6333/collections \
   -H "api-key: $QDRANT_API_KEY"          # 检查 Qdrant 集合
 
-# ===== Agent Runtime =====
-python -m agent.cli                       # 启动 Agent CLI
-python -m agent.cli --mode interactive    # 交互模式
-python -m tests.run_acceptance m1a        # 运行 M1A 验收测试
+# ===== Agent Runtime（M1A Simulation）=====
+python -m physical_agent.cli              # 启动 M1A Simulation CLI（真实闭环，全模拟）
+pytest -q tests/integration/test_m1a_e2e.py  # 运行 M1A end-to-end 验收测试
 
-# ===== ESPHome =====
-esphome run src/physical_agent/adapters/esphome/bedroom-ac.yaml  # 编译+烧录
-esphome logs bedroom-ac-gateway          # 查看设备日志
-esphome clean bedroom-ac-gateway         # 清理编译缓存
+# ===== ESPHome（⚠️ M1C+ / Not implemented，当前无固件与 yaml）=====
+# esphome run src/physical_agent/adapters/esphome/bedroom-ac.yaml  # 编译+烧录（M1C+）
+# esphome logs bedroom-ac-gateway          # 查看设备日志（M1C+）
+# esphome clean bedroom-ac-gateway         # 清理编译缓存（M1C+）
 
 # ===== WireGuard =====
 wg show                                   # 查看 VPN 状态
 sudo wg-quick up wg0                     # 启动 VPN
 sudo wg-quick down wg0                   # 停止 VPN
 
-# ===== 备份 =====
-bash scripts/backup.sh                   # 手动触发备份
-bash scripts/restore.sh <timestamp>      # 从备份恢复
+# ===== 备份（⚠️ Planned / M1B+，脚本未实现）=====
+# bash scripts/backup.sh                   # 手动触发备份（Planned）
+# bash scripts/restore.sh <timestamp>      # 从备份恢复（Planned）
 
 # ===== Kill Switch =====
 touch .kill_switch                        # 激活（禁用所有写操作）
@@ -156,8 +160,8 @@ curl -s -X POST -H "Authorization: Bearer $HA_TOKEN" \
    curl -H "Authorization: Bearer $TOKEN" $HA_URL/api/states/climate.bedroom_ac
    └─ state 应为 "off" 或目标模式
 
-3. 检查 ESPHome 设备日志：
-   esphome logs bedroom-ac-gateway
+3. 检查 ESPHome 设备日志（⚠️ M1C+ / Not implemented）：
+   # esphome logs bedroom-ac-gateway
    └─ 查找 IR transmit 相关日志
    └─ 查找 WiFi 断连记录
 
@@ -179,8 +183,8 @@ curl -s -X POST -H "Authorization: Bearer $HA_TOKEN" \
 诊断步骤：
 1. 检查 WiFi：ESP32-C3 是否在同一网络
 2. 检查电源：USB 供电是否稳定（电压不足会导致重启循环）
-3. 检查 ESPHome 日志（若有串口连接）：
-   esphome logs bedroom-ac-gateway --device /dev/ttyUSB0
+3. 检查 ESPHome 日志（若有串口连接，⚠️ M1C+ / Not implemented）：
+   # esphome logs bedroom-ac-gateway --device /dev/ttyUSB0
 4. 重启设备：拔电 5 秒后重新上电
 5. 若频繁离线：
    └─ 检查 WiFi 信号强度（RSSI > -70dBm）
@@ -222,8 +226,8 @@ curl -s -X POST -H "Authorization: Bearer $HA_TOKEN" \
    └─ 磁盘满 → 清理旧日志或扩容
 3. 检查文件权限：ls -la observability/audit/
    └─ 应为 640（owner rw, group r）
-4. 检查链式哈希完整性：
-   python scripts/verify_audit_chain.py
+4. 检查链式哈希完整性（脚本未实现，当前用 `AuditStore.verify_chain()` / `load_and_verify()` 内建校验）：
+   # python scripts/verify_audit_chain.py   # ⚠️ Not implemented
    └─ 报告断链位置
 5. 若文件损坏：
    └─ 从备份恢复
@@ -311,8 +315,8 @@ touch .kill_switch
 # 拍照记录当前硬件状态
 # 对比 `hardware/schematic/IR_GATEWAY_SCHEMATIC.md` 中的接线图
 
-# 3. 检查固件完整性
-esphome compile src/physical_agent/adapters/esphome/bedroom-ac.yaml
+# 3. 检查固件完整性（⚠️ M1C+ / Not implemented，无固件与 yaml）
+# esphome compile src/physical_agent/adapters/esphome/bedroom-ac.yaml
 # 对比编译出的二进制与设备运行版本（如支持）
 
 # 4. 如确认被篡改：
@@ -325,6 +329,10 @@ esphome compile src/physical_agent/adapters/esphome/bedroom-ac.yaml
 ---
 
 ## 5. 备份与恢复
+
+> ⚠️ **本节整体为 Planned / M1B+，当前不可执行**：`scripts/backup.sh`、`scripts/restore.sh`、
+> `scripts/health_check.sh` 均未实现；HA 配置、Qdrant、ESPHome 等属 M1B+ 基础设施。
+> 以下内容仅为未来运维规划参考。
 
 ### 5.1 自动备份内容
 
@@ -339,10 +347,10 @@ esphome compile src/physical_agent/adapters/esphome/bedroom-ac.yaml
 ### 5.2 手动备份
 
 ```bash
-# 创建完整备份
-bash scripts/backup.sh --full
+# 创建完整备份（⚠️ Planned：scripts/backup.sh 未实现）
+# bash scripts/backup.sh --full
 
-# 备份输出示例：
+# 备份输出示例（未来）：
 # backup_20260816_013000.tar.gz
 # ├── ha_config/
 # ├── qdrant_storage/
@@ -362,8 +370,8 @@ docker compose down
 ls backups/
 # backup_20260816_013000.tar.gz
 
-# 3. 执行恢复
-bash scripts/restore.sh backup_20260816_013000.tar.gz
+# 3. 执行恢复（⚠️ Planned：scripts/restore.sh 未实现）
+# bash scripts/restore.sh backup_20260816_013000.tar.gz
 
 # 4. 重新填写 .env（备份不包含真实密钥）
 cp .env.example .env
@@ -372,8 +380,8 @@ vim .env  # 填写真实值
 # 5. 启动服务
 docker compose up -d
 
-# 6. 验证恢复
-bash scripts/health_check.sh
+# 6. 验证恢复（⚠️ Planned：scripts/health_check.sh 未实现）
+# bash scripts/health_check.sh
 # 应返回全部 OK
 ```
 
@@ -446,17 +454,19 @@ bash scripts/health_check.sh
 
 ### 7.2 回滚命令
 
+> ⚠️ 本节 HA/ESPHome 回滚为 M1B+ / Planned，相关脚本与固件当前未实现。
+
 ```bash
 # Docker 镜像回滚
 docker compose stop <service>
 # 编辑 compose.yml 改回旧版本号
 docker compose up -d <service>
 
-# HA 配置回滚
-bash scripts/restore.sh <backup_containing_old_config>
+# HA 配置回滚（⚠️ Planned：scripts/restore.sh 未实现）
+# bash scripts/restore.sh <backup_containing_old_config>
 
-# ESPHome 固件回滚
-esphome upload <old_firmware_binary>  # 需保留旧编译产物
+# ESPHome 固件回滚（⚠️ M1C+ / Not implemented）
+# esphome upload <old_firmware_binary>  # 需保留旧编译产物
 ```
 
 ---

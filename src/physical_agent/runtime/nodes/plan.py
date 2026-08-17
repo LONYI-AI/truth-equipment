@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from physical_agent.audit.store import AuditStore
 from physical_agent.capability.request import CapabilityRequest
 from physical_agent.runtime.graph import NodeHandler
 from physical_agent.runtime.planning import Plan, ReasoningDecision
@@ -19,7 +20,7 @@ class PlanError(ValueError):
     """Plan 关键输入缺失或非法。"""
 
 
-def make_plan_handler() -> NodeHandler:
+def make_plan_handler(*, audit: AuditStore | None = None) -> NodeHandler:
     """构造 Plan handler。
 
     fail-closed：缺 ReasoningDecision / correlation_id / principal 时显式报错，
@@ -27,6 +28,8 @@ def make_plan_handler() -> NodeHandler:
 
     注意：经 typed 路由后，Plan 节点只会被 PLAN 决策到达；NOOP 决策在 Reason →
     Graph 边界即终态（END），不会进入 Plan。此处的 non-actionable 分支是防御性兜底。
+
+    `audit`：可选审计存储；计划生成后写入 `plan_created`。
     """
 
     def plan(state: AgentState) -> dict[str, Any]:
@@ -63,6 +66,14 @@ def make_plan_handler() -> NodeHandler:
             correlation_id=correlation_id,
             steps=[request],
         )
+
+        if audit is not None:
+            audit.append(
+                "plan_created",
+                correlation_id,
+                {"capability_id": request.capability_id, "device_id": request.device_id},
+            )
+
         return {"current_plan": current_plan}
 
     return plan

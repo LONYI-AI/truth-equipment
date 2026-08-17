@@ -133,7 +133,12 @@ async def test_adapter_cannot_be_reached_directly_by_llm(registry, mock_adapter,
 
 
 async def test_approval_cannot_bypass_rate_limit_changed_after_grant(gateway, mock_adapter):
-    """A policy denial after approval has priority and leaves the grant unconsumed."""
+    """A policy denial after approval has priority and leaves the grant unconsumed.
+
+    REV2 幂等准入语义：同 correlation 的 re-evaluate 幂等放行（不重复计数），rate limit
+    拒绝由**不同 correlation** 触发。用不同 correlation 占满剩余 slot 后，execute_approved
+    的 re-evaluate 仍执行当前 rate-limit 校验并拒绝，grant 不被消费。
+    """
     req = CapabilityRequest(
         capability_id="home.lock.unlock",
         device_id="front-door",
@@ -145,10 +150,23 @@ async def test_approval_cannot_bypass_rate_limit_changed_after_grant(gateway, mo
     gateway.approve(approval_id)
 
     # The initial request consumed one rate slot; exhaust the two remaining
-    # slots before re-evaluation in execute_approved().
-    gateway.policy.evaluate(req)
-    gateway.policy.evaluate(req)
-    outcome = await gateway.execute_approved(req, approval_id)
+    # slots with *different* correlations (idempotent admission must not count
+    # the same correlation twice).
+    gateway.policy.evaluate(
+        CapabilityRequest(capability_id="home.lock.unlock", principal="human", correlation_id="other-1")
+    )
+    gateway.policy.evaluate(
+        CapabilityRequest(capability_id="home.lock.unlock", principal="human", correlation_id="other-2")
+    )
+
+    # A new (different-correlation) request cannot reuse the grant to bypass rate limit.
+    new_req = CapabilityRequest(
+        capability_id="home.lock.unlock",
+        device_id="front-door",
+        principal="human",
+        correlation_id="new-correlation",
+    )
+    outcome = await gateway.execute_approved(new_req, approval_id)
 
     assert outcome == {"status": "rejected", "reason": "rate limit exceeded"}
     assert mock_adapter.execute_calls == 0

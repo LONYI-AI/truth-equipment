@@ -20,22 +20,37 @@ Perception → State → Reasoning → Planning → Tool Execution
 
 ## 当前状态
 
-**阶段：M0 Final Candidate 准备中，Pending Owner M0 Gate。**
+**阶段：Integration Simulation MVP runnable；M1A milestone Gate 仍 In Progress。**
+
+- ✅ **M0 Safety Kernel** 已通过验收（Capability Gateway / Policy / Approval / Execution / Verification / Audit / KillSwitch）。
+- ✅ **Integration Simulation MVP runnable**（M1A 全模拟闭环已可运行）：一个命令即可在本机启动，输入自然语言走完整闭环
+  `Perceive → Recall → Reason → Plan → Policy → Approval → Execute → Verify → Memory → Audit`。
+- ⏳ **M1A milestone Gate**：仍 In Progress（本轮 Integration Hardening 产出待 Owner 验收，尚未通过）。
+- 🔲 **M1B NOT STARTED**：Home Assistant 真实集成未开始（本轮禁止）。
+- 🔲 **PHYSICAL execution / ESPHome / 真实设备控制**：NOT STARTED（本轮禁止）。
 
 当前权威设计由 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 与正式产品/安全文档共同定义；历史规格和阶段审计仅保留在 Git history。
 
 | 关键交付 | 状态 |
 |---|---|
 | Physical Safety Kernel（Capability Gateway / Policy / Approval / Execution / Verification / Audit / KillSwitch）| ✅ `src/physical_agent/` |
-| DeepSeek Harness 真实 SDK 集成（官方 `deepseek_harness.DeepSeekHarness` + Cordis composition + CI smoke test）| ✅ `src/physical_agent/runtime/deepseek_harness.py` + `harness/*/cordis.yml` + `tests/runtime-conformance/test_deepseek_harness_smoke.py` |
-| LangGraph / Mock runtime | ✅ `src/physical_agent/runtime/` |
-| 测试套件（unit/security/conformance/simulation + DeepSeek smoke）| ✅ 本地安全回归；Linux Harness smoke 仅能由支持平台 CI 作为 Gate evidence |
-| Evidence pipeline + CI + pre-commit + consistency | ✅ `scripts/` + `.github/` |
+| M1A Simulation StateGraph（Perceive → Recall → Reason → Plan → Policy → Approval → Execute → Verify → Memory → Audit）| ✅ `src/physical_agent/runtime/` |
+| 正式 LangGraphRuntime（真实 StateGraph + `Command(resume)` 审批挂起/恢复）| ✅ `src/physical_agent/runtime/langgraph.py` |
+| Composition root（单一组装：registry / adapters / policy / approval / gateway / audit / memory / reasoning / handlers / checkpointer / runtime）| ✅ `src/physical_agent/composition.py` |
+| ReasoningModel provider（可配置确定性 `RuleBasedReasoningModel`；测试用 `MockReasoningModel`）| ✅ `src/physical_agent/runtime/reasoning.py` |
+| M1A Simulation CLI（`python -m physical_agent.cli`）| ✅ `src/physical_agent/cli.py` |
+| DeepSeek Harness 真实 SDK 集成（官方 `deepseek_harness.DeepSeekHarness` + Cordis composition + CI smoke test）| ✅ `src/physical_agent/runtime/deepseek_harness.py` |
+| 测试套件（unit / integration / security / conformance / simulation + DeepSeek smoke）| ✅ 本地安全回归；Linux Harness smoke 仅能由支持平台 CI 作为 Gate evidence |
+
+**如实区分（本轮边界）**：
+- **M1A Simulation（Integration Simulation MVP）**：✅ runnable，全模拟（MockDevice/MockAdapter + `mode=SIMULATION`），不接真实设备；**M1A milestone Gate 仍 In Progress**。
+- **M1B Home Assistant**：🔲 NOT STARTED，本轮禁止。
+- **PHYSICAL execution**：🔲 NOT STARTED，本轮禁止（不接真实 Home Assistant、不做 ESPHome、不控制真实设备、不做 Web UI / 手机 App / 多 Agent、不开始 M1B）。
 
 **治理状态（铁律，见 [AGENTS.md](AGENTS.md) §6）**：
 - 所有 ADR 状态 = `Proposed / Pending Owner Approval`，**非 Accepted**。
-- 模拟角色审查 ≠ Owner 批准。**只有 Owner 能通过 Architecture Gate / M0 Gate。**
-- **在 Owner 批准前：不进行真实设备控制、不采购硬件、不开始 M1。**
+- 模拟角色审查 ≠ Owner 批准。**只有 Owner 能通过 Architecture Gate / 各 Milestone Gate。**
+- **在 Owner 批准对应阶段前：不进行真实设备控制、不采购硬件、不开始 M1B / M1C 物理执行。**
 
 ## 仓库结构
 
@@ -55,15 +70,26 @@ Perception → State → Reasoning → Planning → Tool Execution
 
 ## 快速开始
 
-M0.1 完成后可运行测试与证据管道：
+M1A Simulation MVP 可运行测试与交互式 CLI：
 
 ```bash
 pip install -e ".[dev]"          # 安装包 + 开发依赖
-pip install -e ".[dev,harness]"  # + DeepSeek Harness SDK（仅 Linux x64/arm64、macOS arm64）
-pytest -q                        # 运行全部测试
-python scripts/verify_m0.py      # 生成 evidence/（mandatory failure 时退出非零）
-python scripts/check_repo_consistency.py
+pytest -q                        # 运行全部测试（含 M1A end-to-end acceptance）
+python -m physical_agent.cli     # 交互式 M1A Simulation CLI（真实闭环）
 ```
+
+CLI 目标体验：:
+
+```text
+You: 把客厅空调调到26度
+Agent: 此动作需要批准。
+Approve? [y/N]: y
+Agent: SIMULATION 执行完成。
+Verification: V2 satisfied
+```
+
+> **M1A Simulation 边界**：CLI 只走全模拟闭环（`mode=SIMULATION` + MockDevice/MockAdapter），
+> 不接真实 Home Assistant、不做 ESPHome、不控制真实设备。
 
 ```bash
 cp .env.example .env        # 填写真实值；.env 永不提交

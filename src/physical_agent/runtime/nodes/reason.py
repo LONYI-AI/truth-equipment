@@ -16,11 +16,13 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from physical_agent.audit.store import AuditStore
 from physical_agent.runtime.base import UserIntent
 from physical_agent.runtime.graph import NodeHandler
 from physical_agent.runtime.planning import (
     MemoryContext,
     ReasoningDecision,
+    ReasoningRoute,
 )
 from physical_agent.runtime.state import AgentState, WorldState
 
@@ -38,24 +40,59 @@ class ReasoningModel(Protocol):
     ) -> ReasoningDecision: ...
 
 
-def make_reason_handler(model: ReasoningModel) -> NodeHandler:
+def make_reason_handler(model: ReasoningModel, *, audit: AuditStore | None = None) -> NodeHandler:
     """构造 Reason handler。
 
     输出 `reasoning`（ReasoningDecision）+ typed 路由信号 `route`（ReasoningRoute）。
     每轮无条件输出 `current_plan=None`，使任何 prior plan 失效；只有 `plan` 节点
     可以为本轮生成新 Plan（stale-plan lifecycle invariant）。
+
+    fail-closed：`model.reason()` 抛任何异常（malformed model output）都不得让 graph
+    崩溃或泄漏进 policy/execute——统一降级为 `route=NOOP` 安全终态（END），并置
+    `reasoning_failed=True` + 写 `reason_failed` 审计。正常 non-actionable（模型返回
+    NOOP）与模型异常/malformed 必须可区分：前者 completed，后者 failed（见
+    `LangGraphRuntime._finalize`）。
     """
 
     def reason(state: AgentState) -> dict[str, Any]:
-        decision = model.reason(
-            messages=list(state.get("messages", [])),
-            intent=state.get("intent"),
-            world_state=state.get("world_state"),
-            memory_context=state.get("memory_context"),
-        )
+        correlation_id = state.get("correlation_id", "")
+        try:
+            decision = model.reason(
+                messages=list(state.get("messages", [])),
+                intent=state.get("intent"),
+                world_state=state.get("world_state"),
+                memory_context=state.get("memory_context"),
+            )
+        except Exception as exc:  # malformed model output → fail-closed，标记 failed
+            if audit is not None:
+                audit.append(
+                    "reason_failed",
+                    correlation_id,
+                    {"error": str(exc), "route": ReasoningRoute.NOOP},
+                )
+            return {
+                "reasoning": None,
+                "route": ReasoningRoute.NOOP,
+                "reasoning_failed": True,
+                # invariant：每轮无条件 invalidate prior current_plan
+                "current_plan": None,
+            }
+
+        if audit is not None:
+            audit.append(
+                "reason_complete",
+                correlation_id,
+                {
+                    "route": decision.route,
+                    "capability_id": decision.capability_id,
+                    "actionable": decision.is_actionable,
+                },
+            )
+
         return {
             "reasoning": decision,
             "route": decision.route,
+            "reasoning_failed": False,
             # invariant：每轮 ReasoningDecision 无条件 invalidate prior current_plan；
             # 只有 plan 节点为本轮重新生成 Plan。
             "current_plan": None,

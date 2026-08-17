@@ -74,8 +74,13 @@ def make_human_review_handler(
             return {"policy_route": PolicyRoute.REJECTED, "needs_human_review": False}
 
         # 批准不是永久通行证：对同一 canonical request 重新执行当前 Policy。
+        # RateLimiter 采用 request/correlation-aware 幂等准入：同一 (capability,
+        # correlation_id) 的 re-policy 幂等放行且不重复计数，同时仍执行当前限流校验。
+        # effective_risk 取本轮 per-request 风险上下文（request-scoped 输入，非
+        # authorization state；不含 approved/rejected/approval_id/verdict/token）。
+        effective_risk = state.get("risk_context") or risk_context
         try:
-            decision = policy_engine.evaluate(request, risk_context)
+            decision = policy_engine.evaluate(request, effective_risk)
         except Exception as exc:
             if audit is not None:
                 audit.append(

@@ -66,6 +66,7 @@ class ApprovalGrant:
     approval_id: str
     approver: str
     granted_at: str
+    correlation_id: str = ""  # 原始 CapabilityRequest 的 correlation_id（供审计，非 approval_id）
     consumed: bool = False
     _consumed: bool = field(default=False, init=False, repr=False)
 
@@ -119,7 +120,8 @@ class ApprovalEngine:
             if self._is_expired(ar):
                 raise ApprovalError("approval request expired")
             grant = ApprovalGrant(approval_id=approval_id, approver=approver,
-                                  granted_at=self._now().isoformat())
+                                  granted_at=self._now().isoformat(),
+                                  correlation_id=ar.correlation_id)
             self._grants[approval_id] = grant
             return grant
 

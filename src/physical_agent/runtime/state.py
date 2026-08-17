@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from physical_agent.capability.request import CapabilityRequest
 from physical_agent.policy.engine import PolicyDecision
+from physical_agent.policy.risk import RiskContext
 from physical_agent.runtime.base import UserIntent
 from physical_agent.runtime.planning import (
     MemoryContext,
@@ -106,6 +107,9 @@ class AgentState(TypedDict, total=False):
     memory_context: MemoryContext | None
     # 推理决策（Reason 输出）
     reasoning: ReasoningDecision | None
+    # Reason 是否失败（模型异常 / malformed output）。与正常 non-actionable NOOP 区分：
+    # True → Runtime 终态为 failed/reasoning failed；False 且 route=NOOP → completed/no-op。
+    reasoning_failed: bool
     # 当前计划（Plan 输出，复用 M0 CapabilityRequest）
     current_plan: Plan | None
     # 本轮 canonical CapabilityRequest（Policy Gate 从 PLAN.steps / DIRECT reasoning 派生）
@@ -124,6 +128,8 @@ class AgentState(TypedDict, total=False):
     # 会话 / 追踪
     session_id: str
     correlation_id: str
+    # 本轮风险上下文（由 Runtime 从 RuntimeContext 派生，供 Policy Gate / Human Review 消费）
+    risk_context: RiskContext | None
     # 重试计数（verify 失败时由上游节点维护，路由据此判断 retry vs compensate）
     retry_count: int
     # 是否需要人工审批（approval 挂起边界）

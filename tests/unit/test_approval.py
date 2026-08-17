@@ -37,6 +37,16 @@ def test_grant_and_consume_ok():
     assert grant is not None
 
 
+def test_grant_exposes_original_correlation_id():
+    """ApprovalGrant.correlation_id = 原始 CapabilityRequest 的 correlation_id（非 approval_id）。"""
+    eng = ApprovalEngine()
+    req = _req(cid="corr-42")
+    ar = eng.request_approval(req, 2)
+    grant = eng.grant(ar.approval_id, approver="owner")
+    assert grant.correlation_id == "corr-42"
+    assert grant.correlation_id != grant.approval_id
+
+
 def test_replay_rejected():
     eng = ApprovalEngine()
     req = _req()

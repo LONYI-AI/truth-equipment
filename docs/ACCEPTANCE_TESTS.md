@@ -455,11 +455,11 @@ test_coverage_threshold():
 
 **场景**：审批等待期间 graph 安全挂起，人工决定后恢复
 
-> **M1A 语义（W0.1 规范化）**：LangGraphRuntime.resume() 是 M1A 真实缺口（M0 为 stub）。
-> 验收契约只约束**可观察不变量**，复用 M0 已冻结协议：`AgentRuntime.run(UserIntent, RuntimeContext)`
+> **M1A 语义（Integration Hardening 已实现）**：`LangGraphRuntime.resume()` 已从 M0 stub
+> 落成真实实现（LangGraph `Command(resume=...)` + checkpointer），本验收契约约束**可观察不变量**。
+> 复用 M0 已冻结协议：`AgentRuntime.run(UserIntent, RuntimeContext)`
 > 与 `AgentRuntime.resume(session_id, RuntimeEvent)`；审批绑定用 `ApprovalRequest.canonical_request_hash`
 > 并绑定 `correlation_id / principal / device_id / capability_id / canonical_request_hash / risk_tier`。
-> 内部 LangGraph checkpoint/state API 在 W1 依官方文档选定，**不在 W0.1 冻结**。
 
 ```python
 @pytest.mark.acceptance
