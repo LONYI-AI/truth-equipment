@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from websockets.asyncio.client import connect
+
+from physical_agent.audit.store import AuditStore
 
 
 class HomeAssistantError(RuntimeError):
@@ -29,6 +32,7 @@ class HomeAssistantClient:
         token: str,
         *,
         timeout_seconds: float = 10.0,
+        audit: AuditStore | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("base_url must not be empty")
@@ -38,6 +42,7 @@ class HomeAssistantClient:
         self.base_url = base_url.rstrip("/")
         self._token = token
         self.timeout_seconds = timeout_seconds
+        self._audit = audit
 
     @property
     def websocket_url(self) -> str:
@@ -60,19 +65,54 @@ class HomeAssistantClient:
             "Content-Type": "application/json",
         }
 
-    async def api_status(self) -> dict[str, Any]:
-        return await self._request_json("GET", "/api/")
+    def _audit_event(
+        self,
+        event_type: str,
+        correlation_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        if self._audit is not None:
+            self._audit.append(event_type, correlation_id, data)
 
-    async def list_states(self) -> list[dict[str, Any]]:
-        payload = await self._request_json("GET", "/api/states")
+    @staticmethod
+    def _new_correlation_id() -> str:
+        return f"ha-{uuid.uuid4()}"
+
+    async def api_status(
+        self,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._request_json(
+            "GET",
+            "/api/",
+            correlation_id=correlation_id,
+        )
+
+    async def list_states(
+        self,
+        *,
+        correlation_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = await self._request_json(
+            "GET",
+            "/api/states",
+            correlation_id=correlation_id,
+        )
         if not isinstance(payload, list):
             raise HomeAssistantError("unexpected /api/states response")
         return payload
 
-    async def get_state(self, entity_id: str) -> dict[str, Any]:
+    async def get_state(
+        self,
+        entity_id: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
         payload = await self._request_json(
             "GET",
             f"/api/states/{entity_id}",
+            correlation_id=correlation_id,
         )
         if not isinstance(payload, dict):
             raise HomeAssistantError("unexpected entity state response")
@@ -83,11 +123,14 @@ class HomeAssistantClient:
         domain: str,
         service: str,
         data: dict[str, Any],
+        *,
+        correlation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         payload = await self._request_json(
             "POST",
             f"/api/services/{domain}/{service}",
             json_body=data,
+            correlation_id=correlation_id,
         )
         if not isinstance(payload, list):
             raise HomeAssistantError("unexpected service response")
@@ -96,81 +139,135 @@ class HomeAssistantClient:
     async def state_changes(
         self,
         entity_ids: set[str] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+        *,
+        correlation_id: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Yield Home Assistant state_changed event data."""
 
-        async with connect(
-            self.websocket_url,
-            open_timeout=self.timeout_seconds,
-            proxy=None,
-        ) as websocket:
-            required = await self._recv_json(websocket)
-            if required.get("type") != "auth_required":
-                raise HomeAssistantError(
-                    "expected auth_required from websocket"
+        resolved_correlation_id = (
+            correlation_id or self._new_correlation_id()
+        )
+        audit_data = {
+            "transport": "websocket",
+            "path": "/api/websocket",
+        }
+
+        self._audit_event(
+            "ha_ws_connect",
+            resolved_correlation_id,
+            audit_data,
+        )
+
+        phase = "connect"
+
+        try:
+            async with connect(
+                self.websocket_url,
+                open_timeout=self.timeout_seconds,
+                proxy=None,
+            ) as websocket:
+                phase = "handshake"
+                required = await self._recv_json(websocket)
+                if required.get("type") != "auth_required":
+                    raise HomeAssistantError(
+                        "expected auth_required from websocket"
+                    )
+
+                phase = "auth"
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "auth",
+                            "access_token": self._token,
+                        }
+                    )
                 )
 
-            await websocket.send(
-                json.dumps(
-                    {
-                        "type": "auth",
-                        "access_token": self._token,
-                    }
-                )
-            )
+                auth_result = await self._recv_json(websocket)
+                if auth_result.get("type") == "auth_invalid":
+                    raise HomeAssistantAuthError(
+                        "Home Assistant websocket "
+                        "authentication failed"
+                    )
+                if auth_result.get("type") != "auth_ok":
+                    raise HomeAssistantError(
+                        "unexpected websocket authentication response"
+                    )
 
-            auth_result = await self._recv_json(websocket)
-            if auth_result.get("type") == "auth_invalid":
-                raise HomeAssistantAuthError(
-                    "Home Assistant websocket authentication failed"
-                )
-            if auth_result.get("type") != "auth_ok":
-                raise HomeAssistantError(
-                    "unexpected websocket authentication response"
+                self._audit_event(
+                    "ha_ws_authenticated",
+                    resolved_correlation_id,
+                    audit_data,
                 )
 
-            subscription_id = 1
-            await websocket.send(
-                json.dumps(
-                    {
-                        "id": subscription_id,
-                        "type": "subscribe_events",
-                        "event_type": "state_changed",
-                    }
-                )
-            )
-
-            subscription = await self._recv_json(websocket)
-            if (
-                subscription.get("type") != "result"
-                or subscription.get("id") != subscription_id
-                or subscription.get("success") is not True
-            ):
-                raise HomeAssistantError(
-                    "state_changed subscription failed"
+                phase = "subscribe"
+                subscription_id = 1
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "id": subscription_id,
+                            "type": "subscribe_events",
+                            "event_type": "state_changed",
+                        }
+                    )
                 )
 
-            while True:
-                message = await self._recv_json(websocket)
+                subscription = await self._recv_json(websocket)
                 if (
-                    message.get("type") != "event"
-                    or message.get("id") != subscription_id
+                    subscription.get("type") != "result"
+                    or subscription.get("id") != subscription_id
+                    or subscription.get("success") is not True
                 ):
-                    continue
+                    raise HomeAssistantError(
+                        "state_changed subscription failed"
+                    )
 
-                event = message.get("event")
-                if not isinstance(event, dict):
-                    continue
+                self._audit_event(
+                    "ha_ws_subscribed",
+                    resolved_correlation_id,
+                    {
+                        **audit_data,
+                        "event_type": "state_changed",
+                    },
+                )
 
-                data = event.get("data")
-                if not isinstance(data, dict):
-                    continue
+                phase = "stream"
 
-                entity_id = data.get("entity_id")
-                if entity_ids is not None and entity_id not in entity_ids:
-                    continue
+                while True:
+                    message = await self._recv_json(websocket)
+                    if (
+                        message.get("type") != "event"
+                        or message.get("id") != subscription_id
+                    ):
+                        continue
 
-                yield data
+                    event = message.get("event")
+                    if not isinstance(event, dict):
+                        continue
+
+                    data = event.get("data")
+                    if not isinstance(data, dict):
+                        continue
+
+                    entity_id = data.get("entity_id")
+                    if (
+                        entity_ids is not None
+                        and entity_id not in entity_ids
+                    ):
+                        continue
+
+                    yield data
+        except HomeAssistantError as exc:
+            self._audit_event(
+                "ha_ws_error",
+                resolved_correlation_id,
+                {
+                    **audit_data,
+                    "phase": phase,
+                    "error": type(exc).__name__,
+                },
+            )
+            raise
 
     async def _request_json(
         self,
@@ -178,7 +275,23 @@ class HomeAssistantClient:
         path: str,
         *,
         json_body: dict[str, Any] | None = None,
+        correlation_id: str | None = None,
     ) -> Any:
+        resolved_correlation_id = (
+            correlation_id or self._new_correlation_id()
+        )
+
+        audit_data = {
+            "transport": "rest",
+            "method": method,
+            "path": path,
+        }
+        self._audit_event(
+            "ha_api_request",
+            resolved_correlation_id,
+            audit_data,
+        )
+
         async with httpx.AsyncClient(
             base_url=self.base_url,
             headers=self._headers,
@@ -193,6 +306,15 @@ class HomeAssistantClient:
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                self._audit_event(
+                    "ha_api_error",
+                    resolved_correlation_id,
+                    {
+                        **audit_data,
+                        "status_code": exc.response.status_code,
+                        "error": "http_status",
+                    },
+                )
                 if exc.response.status_code in (401, 403):
                     raise HomeAssistantAuthError(
                         "Home Assistant authentication failed"
@@ -202,13 +324,39 @@ class HomeAssistantClient:
                     f"{exc.response.status_code}"
                 ) from exc
             except httpx.HTTPError as exc:
+                self._audit_event(
+                    "ha_api_error",
+                    resolved_correlation_id,
+                    {
+                        **audit_data,
+                        "error": type(exc).__name__,
+                    },
+                )
                 raise HomeAssistantError(
                     "Home Assistant request failed"
                 ) from exc
 
+        self._audit_event(
+            "ha_api_response",
+            resolved_correlation_id,
+            {
+                **audit_data,
+                "status_code": response.status_code,
+            },
+        )
+
         try:
             return response.json()
         except ValueError as exc:
+            self._audit_event(
+                "ha_api_error",
+                resolved_correlation_id,
+                {
+                    **audit_data,
+                    "status_code": response.status_code,
+                    "error": "invalid_json",
+                },
+            )
             raise HomeAssistantError(
                 "Home Assistant returned invalid JSON"
             ) from exc
